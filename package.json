@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server": "node server.js",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -16,6 +17,8 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.0",
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
     "lucide-react": "^1.33.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

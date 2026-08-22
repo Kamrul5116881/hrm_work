@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, createContext, useContext } from "react";
 import {
   LayoutDashboard,
   BookOpen,
@@ -21,6 +21,7 @@ import {
   Upload,
   ArrowRight,
   LogIn,
+  LogOut,
   Users,
   ClipboardList,
   CheckCircle2,
@@ -4340,8 +4341,167 @@ function ProbationIncrementTracker({ employees, onMakeRegular }) {
 }
 
 /* =========================================================================
-   APP SHELL
+   LOGOUT — global top-bar button + styled confirm dialog.
+   Rendered by the Workspace shell so it is available on every module.
+   The button only opens the dialog; the session is cleared and the app
+   returns to the login stage ONLY after the user confirms (onConfirm).
 ========================================================================= */
+function LogoutButton({ onConfirm }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="hrm-header-logout-btn"
+        onClick={() => setConfirmOpen(true)}
+      >
+        <LogOut size={15} /> Logout
+      </button>
+
+      {confirmOpen && (
+        <LogoutConfirmDialog
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => {
+            setConfirmOpen(false);
+            onConfirm();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function LogoutConfirmDialog({ onCancel, onConfirm }) {
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape") onCancel();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        background: "rgba(20,27,48,.48)",
+        fontFamily: "'IBM Plex Sans', sans-serif",
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirm logout"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(370px, 100%)",
+          background: "#fff",
+          border: `1px solid ${HR_T.line}`,
+          borderRadius: 12,
+          boxShadow: "0 28px 70px rgba(20,27,48,.35)",
+          padding: "26px 26px 22px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 10,
+              background: HR_T.amberSoft,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <LogOut size={18} color={HR_T.amber} />
+          </div>
+          <div>
+            <div
+              style={{
+                fontFamily: "'Space Grotesk', sans-serif",
+                fontSize: 17,
+                fontWeight: 700,
+                color: HR_T.ink,
+              }}
+            >
+              Confirm logout
+            </div>
+            <div style={{ fontSize: 11.5, color: HR_T.inkSoft, marginTop: 2 }}>
+              Hastizam Limited · HR &amp; Payroll
+            </div>
+          </div>
+        </div>
+
+        <p
+          style={{
+            margin: "16px 0 20px",
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: HR_T.inkSoft,
+          }}
+        >
+          Are you sure you want to logout? Your unsaved changes will remain on
+          this device and you will need to sign in again.
+        </p>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 9 }}>
+          <button
+            type="button"
+            autoFocus
+            onClick={onCancel}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 7,
+              border: `1px solid ${HR_T.line}`,
+              background: "#fff",
+              color: HR_T.inkSoft,
+              fontFamily: "'IBM Plex Sans', sans-serif",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            No
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            style={{
+              padding: "8px 18px",
+              borderRadius: 7,
+              border: "none",
+              background: HR_T.amber,
+              color: "#fff",
+              fontFamily: "'IBM Plex Sans', sans-serif",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+            }}
+          >
+            <LogOut size={13} /> Yes, Logout
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   APP SHELL
+======================================================================== */
 const NAV = [
   { id: "dashboard", label: "HRDashboard", icon: LayoutDashboard },
   { id: "employees", label: "Employee Data", icon: Users },
@@ -4548,9 +4708,6 @@ function HRApp() {
             border-bottom: 2px solid transparent !important;
             border-radius: 8px !important;
           }
-          .hrm-sidebar > div:last-child {
-            display: none !important;
-          }
           .hrm-main {
             width: 100% !important;
             padding: 18px 14px 28px !important;
@@ -4750,85 +4907,360 @@ function WelcomePage({ onContinue }) {
 }
 
 /* ---------------------------------------------------------------------
-   LOGIN PAGE — UI only, no real authentication yet
+   LOGIN PAGE — ledger-style login (currently unused; App uses
+   TopHRLoginPage below). Wired to POST /api/auth.
 --------------------------------------------------------------------- */
 function LoginPage({ onLogin, onBack }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  function submit(e) {
-    e.preventDefault();
-    onLogin(); // UI only — no real authentication yet
+  async function submit(e) {
+  e.preventDefault();
+
+  if (loading) return;
+
+  if (!email.trim() || !password) {
+    setError("Please enter username/email and password.");
+    return;
   }
 
-  return (
-    <div className="hr-login" style={{
-      minHeight: "100vh", width: "100%", display: "flex", alignItems: "center",
-      justifyContent: "center", background: T.paper, fontFamily: "'IBM Plex Sans', sans-serif",
-      padding: 24,
-    }}>
-      <form onSubmit={submit} style={{
-        width: "100%", maxWidth: 380, background: T.card, border: `1px solid ${T.line}`,
-        borderRadius: 14, padding: "38px 34px", position: "relative", overflow: "hidden",
-      }}>
-        <div style={{ position: "absolute", left: 0, top: 0, right: 0, height: 3, background: T.rule }} />
+  setLoading(true);
+  setError("");
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 26 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 8, background: T.ink, display: "flex",
-            alignItems: "center", justifyContent: "center", fontFamily: "'Source Serif 4'",
-            color: "#fff", fontWeight: 700, fontSize: 17,
-          }}>H</div>
+  try {
+    const response = await fetch("/api/auth", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: email.trim(),
+        password,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || data.success !== true) {
+      setError(data.message || "Invalid username/email or password.");
+      return;
+    }
+
+    // IMPORTANT:
+    // Dashboard ONLY opens after successful authentication
+    onLogin(data.user);
+
+  } catch (err) {
+    console.error("AUTH ERROR:", err);
+    setError("Unable to communicate with authentication server.");
+  } finally {
+    setLoading(false);
+  }
+}
+
+  return (
+    <div
+      className="hr-login"
+      style={{
+        minHeight: "100vh",
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: T.paper,
+        fontFamily: "'IBM Plex Sans', sans-serif",
+        padding: 24,
+        boxSizing: "border-box",
+      }}
+    >
+      <form
+        onSubmit={submit}
+        style={{
+          width: "100%",
+          maxWidth: 380,
+          background: T.card,
+          border: `1px solid ${T.line}`,
+          borderRadius: 14,
+          padding: "38px 34px",
+          position: "relative",
+          overflow: "hidden",
+          boxSizing: "border-box",
+          boxShadow: "0 18px 45px rgba(0,0,0,0.08)",
+        }}
+      >
+        {/* Top line */}
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            right: 0,
+            height: 3,
+            background: T.rule,
+          }}
+        />
+
+        {/* Logo / Brand */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 26,
+          }}
+        >
+          <div
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              background: T.ink,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontFamily: "'Source Serif 4'",
+              color: "#fff",
+              fontWeight: 700,
+              fontSize: 17,
+              flexShrink: 0,
+            }}
+          >
+            H
+          </div>
+
           <div>
-            <div style={{ fontFamily: "'Source Serif 4'", fontSize: 16, fontWeight: 600, color: T.ink, lineHeight: 1.1 }}>Hastizam HR Management</div>
-            <div style={{ fontFamily: "'IBM Plex Sans'", fontSize: 10.5, color: T.muted }}>Secure sign in to continue</div>
+            <div
+              style={{
+                fontFamily: "'Source Serif 4'",
+                fontSize: 16,
+                fontWeight: 600,
+                color: T.ink,
+                lineHeight: 1.1,
+              }}
+            >
+              Hastizam HR Management
+            </div>
+
+            <div
+              style={{
+                fontFamily: "'IBM Plex Sans'",
+                fontSize: 10.5,
+                color: T.muted,
+                marginTop: 3,
+              }}
+            >
+              Secure sign in to continue
+            </div>
           </div>
         </div>
 
+        {/* Email */}
         <Field label="Username or Email">
-          <TInput type="text" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@hastizam.com" autoComplete="username" />
-        </Field>
-        <div style={{ height: 14 }} />
-        <Field label="Password">
-          <TInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
+          <TInput
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@hastizam.com"
+            autoComplete="username"
+            disabled={loading}
+          />
         </Field>
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "16px 0 22px" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: "'IBM Plex Sans'", fontSize: 12.5, color: T.inkSoft, cursor: "pointer" }}>
-            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ accentColor: T.accent, width: 14, height: 14 }} />
+        <div style={{ height: 14 }} />
+
+        {/* Password */}
+        <Field label="Password">
+          <TInput
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            autoComplete="current-password"
+            disabled={loading}
+          />
+        </Field>
+
+        {/* Error Message */}
+        {error && (
+  <div
+    style={{
+      marginTop: 10,
+      marginBottom: 10,
+      padding: "10px 12px",
+      borderRadius: 8,
+      background: "#fef2f2",
+      border: "1px solid #fecaca",
+      color: "#dc2626",
+      fontSize: 12,
+    }}
+  >
+    {error}
+  </div>
+)}
+
+        {/* Remember / Forgot */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            margin: "16px 0 22px",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              fontFamily: "'IBM Plex Sans'",
+              fontSize: 12.5,
+              color: T.inkSoft,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+              disabled={loading}
+              style={{
+                accentColor: T.accent,
+                width: 14,
+                height: 14,
+              }}
+            />
+
             Remember me
           </label>
-          <a href="#" onClick={(e) => e.preventDefault()} style={{ fontFamily: "'IBM Plex Sans'", fontSize: 12.5, color: T.rule, textDecoration: "none", fontWeight: 600 }}>
+
+          <a
+            href="#"
+            onClick={(e) => e.preventDefault()}
+            style={{
+              fontFamily: "'IBM Plex Sans'",
+              fontSize: 12.5,
+              color: T.rule,
+              textDecoration: "none",
+              fontWeight: 600,
+            }}
+          >
             Forgot password?
           </a>
         </div>
 
-        <button type="submit" style={{
-          width: "100%", padding: "12px 0", borderRadius: 8, border: "none",
-          background: T.accent, color: "#fff", fontFamily: "'IBM Plex Sans'",
-          fontSize: 14.5, fontWeight: 600, cursor: "pointer", display: "flex",
-          alignItems: "center", justifyContent: "center", gap: 8,
-        }}>
-          <LogIn size={16} /> Login
+        {/* Login Button */}
+        <button
+          type="submit"
+          disabled={loading}
+          style={{
+            width: "100%",
+            padding: "12px 0",
+            borderRadius: 8,
+            border: "none",
+            background: loading ? "#94a3b8" : T.accent,
+            color: "#fff",
+            fontFamily: "'IBM Plex Sans'",
+            fontSize: 14.5,
+            fontWeight: 600,
+            cursor: loading ? "not-allowed" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            opacity: loading ? 0.8 : 1,
+          }}
+        >
+          {loading ? (
+            <>
+              <span
+                style={{
+                  width: 14,
+                  height: 14,
+                  border: "2px solid rgba(255,255,255,0.4)",
+                  borderTopColor: "#fff",
+                  borderRadius: "50%",
+                  display: "inline-block",
+                  animation: "hrmLoginSpin 0.7s linear infinite",
+                }}
+              />
+
+              Signing in...
+            </>
+          ) : (
+            <>
+              <LogIn size={16} />
+              Login
+            </>
+          )}
         </button>
 
-        <div style={{ textAlign: "center", marginTop: 18 }}>
-          <button type="button" onClick={onBack} style={{
-            background: "none", border: "none", cursor: "pointer",
-            fontFamily: "'IBM Plex Sans'", fontSize: 12, color: T.muted,
-          }}>
+        {/* Back */}
+        <div
+          style={{
+            textAlign: "center",
+            marginTop: 18,
+          }}
+        >
+          <button
+            type="button"
+            onClick={onBack}
+            disabled={loading}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: loading ? "not-allowed" : "pointer",
+              fontFamily: "'IBM Plex Sans'",
+              fontSize: 12,
+              color: T.muted,
+            }}
+          >
             ← Back
           </button>
         </div>
 
-        <div style={{
-          marginTop: 18, paddingTop: 16, borderTop: `1px dashed ${T.line}`,
-          fontFamily: "'IBM Plex Sans'", fontSize: 10.5, color: T.muted, textAlign: "center", lineHeight: 1.5,
-        }}>
-          UI preview only — any credentials continue into the ledger. Real authentication isn't wired up yet.
+        {/* Security note */}
+        <div
+          style={{
+            marginTop: 18,
+            paddingTop: 16,
+            borderTop: `1px dashed ${T.line}`,
+            fontFamily: "'IBM Plex Sans'",
+            fontSize: 10.5,
+            color: T.muted,
+            textAlign: "center",
+            lineHeight: 1.5,
+          }}
+        >
+          Your credentials are verified securely against the
+          HRM database.
         </div>
       </form>
+
+      <style>
+        {`
+          @keyframes hrmLoginSpin {
+            from {
+              transform: rotate(0deg);
+            }
+            to {
+              transform: rotate(360deg);
+            }
+          }
+
+          @media (max-width: 480px) {
+            .hr-login {
+              padding: 14px !important;
+            }
+
+            .hr-login form {
+              padding: 30px 22px !important;
+            }
+          }
+        `}
+      </style>
     </div>
   );
 }
@@ -5138,15 +5570,26 @@ function LedgerApp() {
    the ledger (unchanged first-open experience); switching to HR does
    not affect the ledger's state, and vice versa.
 --------------------------------------------------------------------- */
-function Workspace() {
+/* ---------------------------------------------------------------------
+   WORKSPACE — GLOBAL LAYOUT SHELL. The thin top bar is shared by every
+   module (Accounting Ledger, HR Management, and anything added to the
+   switcher below), so the authenticated-user chip and the Logout button
+   here are visible across the whole application. Any future module
+   registered in this bar automatically gets global logout for free.
+--------------------------------------------------------------------- */
+function Workspace({ onLogout }) {
+  const { user } = useAuth();
   const [system, setSystem] = useState("ledger"); // ledger | hr
+  const initials = user?.name
+    ? user.name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase()
+    : "";
   return (
     <div>
-      <div className="no-print" style={{
+      <div className="no-print hrm-topbar" style={{
         display: "flex", alignItems: "center", gap: 8, padding: "10px 20px",
         background: T.accentDeep, borderBottom: `1px solid ${T.line}`,
       }}>
-        <span style={{ fontFamily: "'IBM Plex Sans'", fontSize: 11.5, color: "#CFE3DA", fontWeight: 600, marginRight: 6 }}>Hastizam Systems</span>
+        <span className="hrm-topbar-brand-label" style={{ fontFamily: "'IBM Plex Sans'", fontSize: 11.5, color: "#CFE3DA", fontWeight: 600, marginRight: 6 }}>Hastizam Systems</span>
         {[["ledger", "Accounting Ledger"], ["hr", "HR Management"]].map(([id, label]) => (
           <button key={id} onClick={() => setSystem(id)} style={{
             padding: "6px 14px", borderRadius: 20, border: "none", cursor: "pointer",
@@ -5157,6 +5600,33 @@ function Workspace() {
             {label}
           </button>
         ))}
+
+        {/* GLOBAL IDENTITY + LOGOUT — top-right, on every module */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {user && (
+            <>
+              <div
+                title={user.name}
+                style={{
+                  width: 28, height: 28, borderRadius: "50%", background: HR_T.amber,
+                  color: "#fff", fontFamily: "'IBM Plex Sans'", fontSize: 11, fontWeight: 700,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >
+                {initials || "?"}
+              </div>
+              <div className="hrm-topbar-user-meta">
+                <div style={{ fontFamily: "'IBM Plex Sans'", fontSize: 12, fontWeight: 600, color: "#fff", lineHeight: 1.15 }}>
+                  {user.name}
+                </div>
+                <div style={{ fontFamily: "'IBM Plex Sans'", fontSize: 10, color: "#CFE3DA" }}>
+                  {user.role}
+                </div>
+              </div>
+            </>
+          )}
+          {onLogout && <LogoutButton onConfirm={onLogout} />}
+        </div>
       </div>
       {system === "ledger" ? <LedgerApp /> : <HRApp />}
     </div>
@@ -5164,8 +5634,9 @@ function Workspace() {
 }
 
 /* ---------------------------------------------------------------------
-   TOP-LEVEL APP — drives Welcome → Login → Workspace with a fade/slide
-   transition between stages. UI flow only; login does not authenticate.
+   TOP-LEVEL APP — drives Login → Workspace with a fade/slide
+   transition between stages. The workspace is only reachable after
+   /api/auth confirms the credentials.
 --------------------------------------------------------------------- */
 const STAGE_TRANSITION_CSS = `
 @keyframes stageFadeIn {
@@ -5180,6 +5651,60 @@ const STAGE_TRANSITION_CSS = `
 .stage-leave { animation: stageFadeOut 260ms ease both; }
 `;
 
+/* -------------------------------------------------------------------------
+   GLOBAL LAYOUT CSS — top-bar identity + logout (visible on every module)
+   and the post-logout toast. Used by the Workspace shell.
+------------------------------------------------------------------------- */
+const GLOBAL_LAYOUT_CSS = `
+@keyframes hrmToastIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hrm-header-logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,.35);
+  color: #E8EDF7;
+  font-family: 'IBM Plex Sans';
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .18s ease, color .18s ease, border-color .18s ease;
+}
+.hrm-header-logout-btn:hover { background: #fff; border-color: #fff; color: ${HR_T.indigoDeep}; }
+.hrm-toast {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100vw - 44px);
+  padding: 11px 16px;
+  background: #fff;
+  border: 1px solid ${HR_T.line};
+  border-left: 3px solid ${HR_T.good};
+  border-radius: 9px;
+  box-shadow: 0 14px 40px rgba(20,27,48,.22);
+  animation: hrmToastIn 260ms ease both;
+}
+@media (max-width: 900px) {
+  .hrm-topbar { flex-wrap: wrap; row-gap: 8px; padding: 10px 14px !important; }
+}
+@media (max-width: 600px) {
+  .hrm-topbar { padding: 8px 12px !important; gap: 6px; }
+  .hrm-topbar-user-meta { display: none; }
+  .hrm-topbar-brand-label { display: none; }
+  .hrm-toast { left: 16px; right: 16px; bottom: 14px; }
+}
+`;
+
 /* =========================================================================
    TOP-LEVEL LOGIN GATE — the HR Management login screen (copied verbatim
    from HRApp's own login gate), used as the app's first screen instead
@@ -5191,321 +5716,675 @@ function TopHRLoginPage({ onLogin }) {
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
   const [showLoginPass, setShowLoginPass] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
 
-    return (
-      <div className="hrm-login-page">
-        <style>{`
+  async function handleLogin() {
+    if (loading) return;
+
+    if (!loginUser.trim() || !loginPass) {
+      setLoginError("Please enter username/email and password.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setLoginError("");
+
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: loginUser.trim(),
+          password: loginPass,
+        }),
+      });
+
+      let data;
+
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (!response.ok || !data.success) {
+        setLoginError(
+          data.message || "Invalid username/email or password."
+        );
+        return;
+      }
+
+      // IMPORTANT:
+      // Dashboard will open ONLY after successful authentication.
+      onLogin(data.user);
+
+    } catch (error) {
+      console.error("Login error:", error);
+      setLoginError(
+        "Unable to connect to authentication server."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function submitLogin(e) {
+    e.preventDefault();
+    handleLogin();
+  }
+
+  return (
+    <div className="hrm-login-page">
+      <style>{`
+        .hrm-login-page {
+          min-height: 100vh;
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          background:
+            radial-gradient(circle at 15% 15%, rgba(231,166,42,.16), transparent 32%),
+            radial-gradient(circle at 85% 85%, rgba(38,58,112,.20), transparent 35%),
+            #f4f1e9;
+          font-family: 'IBM Plex Sans', sans-serif;
+        }
+
+        .hrm-login-shell {
+          width: min(960px, 100%);
+          min-height: 560px;
+          display: grid;
+          grid-template-columns: 1.08fr .92fr;
+          overflow: hidden;
+          border-radius: 22px;
+          background: #fff;
+          border: 1px solid rgba(38,58,112,.14);
+          box-shadow: 0 28px 80px rgba(28,39,68,.18);
+        }
+
+        .hrm-login-brand {
+          position: relative;
+          padding: 48px;
+          color: #fff;
+          background:
+            linear-gradient(145deg, #17264e 0%, #263a70 62%, #304982 100%);
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          overflow: hidden;
+        }
+
+        .hrm-login-brand:before,
+        .hrm-login-brand:after {
+          content: "";
+          position: absolute;
+          border-radius: 50%;
+          pointer-events: none;
+        }
+
+        .hrm-login-brand:before {
+          width: 300px;
+          height: 300px;
+          right: -130px;
+          top: -130px;
+          background: rgba(231,166,42,.12);
+        }
+
+        .hrm-login-brand:after {
+          width: 240px;
+          height: 240px;
+          left: -110px;
+          bottom: -120px;
+          border: 1px solid rgba(255,255,255,.08);
+        }
+
+        .hrm-logo-mark {
+          width: 48px;
+          height: 48px;
+          border-radius: 13px;
+          background: #e7a62a;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 10px 28px rgba(231,166,42,.25);
+        }
+
+        .hrm-login-title {
+          font-family: 'Space Grotesk', sans-serif;
+          font-size: clamp(34px, 5vw, 52px);
+          line-height: .98;
+          letter-spacing: -.04em;
+          margin: 22px 0 14px;
+        }
+
+        .hrm-login-copy {
+          max-width: 450px;
+          color: #cbd4eb;
+          line-height: 1.7;
+          font-size: 14px;
+        }
+
+        .hrm-login-features {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          margin-top: 28px;
+        }
+
+        .hrm-login-feature {
+          padding: 12px;
+          border: 1px solid rgba(255,255,255,.09);
+          background: rgba(255,255,255,.045);
+          border-radius: 10px;
+          color: #dce3f4;
+          font-size: 11px;
+        }
+
+        .hrm-login-form {
+          padding: 48px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+
+        .hrm-login-form h2 {
+          font-family: 'Space Grotesk', sans-serif;
+          color: #202b43;
+          font-size: 27px;
+          margin: 0 0 7px;
+        }
+
+        .hrm-login-form .sub {
+          color: #7a8499;
+          font-size: 12px;
+          margin-bottom: 27px;
+        }
+
+        .hrm-login-label {
+          display: block;
+          color: #46516a;
+          font-size: 11px;
+          font-weight: 700;
+          margin: 0 0 7px;
+        }
+
+        .hrm-login-input-wrap {
+          position: relative;
+          margin-bottom: 16px;
+        }
+
+        .hrm-login-input {
+          width: 100%;
+          height: 46px;
+          border: 1px solid #d7dce6;
+          border-radius: 9px;
+          padding: 0 42px 0 40px;
+          outline: none;
+          font: 13px 'IBM Plex Sans', sans-serif;
+          color: #202b43;
+          background: #fbfbfa;
+          box-sizing: border-box;
+        }
+
+        .hrm-login-input:focus {
+          border-color: #263a70;
+          box-shadow: 0 0 0 3px rgba(231,166,42,.16);
+        }
+
+        .hrm-login-input:disabled {
+          opacity: .65;
+        }
+
+        .hrm-login-icon {
+          position: absolute;
+          left: 13px;
+          top: 15px;
+          color: #8b95a8;
+        }
+
+        .hrm-login-eye {
+          position: absolute;
+          right: 7px;
+          top: 6px;
+          width: 34px;
+          height: 34px;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          color: #7f899d;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+        }
+
+        .hrm-login-button {
+          width: 100%;
+          height: 46px;
+          margin-top: 5px;
+          border: 0;
+          border-radius: 9px;
+          background: #263a70;
+          color: #fff;
+          font: 700 13px 'IBM Plex Sans', sans-serif;
+          cursor: pointer;
+          box-shadow: 0 10px 24px rgba(38,58,112,.18);
+          transition: transform .15s ease, background .15s ease;
+        }
+
+        .hrm-login-button:hover:not(:disabled) {
+          background: #304982;
+          transform: translateY(-1px);
+        }
+
+        .hrm-login-button:disabled {
+          opacity: .65;
+          cursor: not-allowed;
+          transform: none;
+        }
+
+        .hrm-login-error {
+          margin: -4px 0 12px;
+          padding: 10px 12px;
+          border-radius: 8px;
+          background: #fef2f2;
+          border: 1px solid #fecaca;
+          color: #dc2626;
+          font-size: 11.5px;
+          line-height: 1.45;
+        }
+
+        .hrm-demo-note {
+          margin-top: 15px;
+          padding: 10px 12px;
+          border-radius: 8px;
+          background: #f6f2e8;
+          color: #7b6b48;
+          font-size: 10.5px;
+          line-height: 1.5;
+        }
+
+        .hrm-login-footer {
+          margin-top: 25px;
+          color: #a0a8b7;
+          font-size: 10px;
+          text-align: center;
+        }
+
+        @media (max-width: 760px) {
           .hrm-login-page {
-            min-height: 100vh;
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 24px;
-            background:
-              radial-gradient(circle at 15% 15%, rgba(231,166,42,.16), transparent 32%),
-              radial-gradient(circle at 85% 85%, rgba(38,58,112,.20), transparent 35%),
-              #f4f1e9;
-            font-family: 'IBM Plex Sans', sans-serif;
-          }
-          .hrm-login-shell {
-            width: min(960px, 100%);
-            min-height: 560px;
-            display: grid;
-            grid-template-columns: 1.08fr .92fr;
-            overflow: hidden;
-            border-radius: 22px;
-            background: #fff;
-            border: 1px solid rgba(38,58,112,.14);
-            box-shadow: 0 28px 80px rgba(28,39,68,.18);
-          }
-          .hrm-login-brand {
-            position: relative;
-            padding: 48px;
-            color: #fff;
-            background:
-              linear-gradient(145deg, #17264e 0%, #263a70 62%, #304982 100%);
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            overflow: hidden;
-          }
-          .hrm-login-brand:before,
-          .hrm-login-brand:after {
-            content: "";
-            position: absolute;
-            border-radius: 50%;
-            pointer-events: none;
-          }
-          .hrm-login-brand:before {
-            width: 300px;
-            height: 300px;
-            right: -130px;
-            top: -130px;
-            background: rgba(231,166,42,.12);
-          }
-          .hrm-login-brand:after {
-            width: 240px;
-            height: 240px;
-            left: -110px;
-            bottom: -120px;
-            border: 1px solid rgba(255,255,255,.08);
-          }
-          .hrm-logo-mark {
-            width: 48px;
-            height: 48px;
-            border-radius: 13px;
-            background: #e7a62a;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 10px 28px rgba(231,166,42,.25);
-          }
-          .hrm-login-title {
-            font-family: 'Space Grotesk', sans-serif;
-            font-size: clamp(34px, 5vw, 52px);
-            line-height: .98;
-            letter-spacing: -.04em;
-            margin: 22px 0 14px;
-          }
-          .hrm-login-copy {
-            max-width: 450px;
-            color: #cbd4eb;
-            line-height: 1.7;
-            font-size: 14px;
-          }
-          .hrm-login-features {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 28px;
-          }
-          .hrm-login-feature {
             padding: 12px;
-            border: 1px solid rgba(255,255,255,.09);
-            background: rgba(255,255,255,.045);
-            border-radius: 10px;
-            color: #dce3f4;
-            font-size: 11px;
           }
+
+          .hrm-login-shell {
+            grid-template-columns: 1fr;
+            min-height: auto;
+            max-width: 500px;
+          }
+
+          .hrm-login-brand {
+            min-height: 280px;
+            padding: 28px 24px;
+          }
+
+          .hrm-login-title {
+            font-size: 36px;
+          }
+
+          .hrm-login-features {
+            grid-template-columns: 1fr 1fr;
+          }
+
           .hrm-login-form {
-            padding: 48px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
+            padding: 30px 24px;
           }
-          .hrm-login-form h2 {
-            font-family: 'Space Grotesk', sans-serif;
-            color: #202b43;
-            font-size: 27px;
-            margin: 0 0 7px;
-          }
-          .hrm-login-form .sub {
-            color: #7a8499;
-            font-size: 12px;
-            margin-bottom: 27px;
-          }
-          .hrm-login-label {
-            display: block;
-            color: #46516a;
-            font-size: 11px;
-            font-weight: 700;
-            margin: 0 0 7px;
-          }
-          .hrm-login-input-wrap {
-            position: relative;
-            margin-bottom: 16px;
-          }
-          .hrm-login-input {
-            width: 100%;
-            height: 46px;
-            border: 1px solid #d7dce6;
-            border-radius: 9px;
-            padding: 0 42px 0 40px;
-            outline: none;
-            font: 13px 'IBM Plex Sans', sans-serif;
-            color: #202b43;
-            background: #fbfbfa;
-          }
-          .hrm-login-input:focus {
-            border-color: #263a70;
-            box-shadow: 0 0 0 3px rgba(231,166,42,.16);
-          }
-          .hrm-login-icon {
-            position: absolute;
-            left: 13px;
-            top: 15px;
-            color: #8b95a8;
-          }
-          .hrm-login-eye {
-            position: absolute;
-            right: 7px;
-            top: 6px;
-            width: 34px;
-            height: 34px;
-            padding: 0;
-            border: 0;
-            background: transparent;
-            color: #7f899d;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-          }
-          .hrm-login-button {
-            width: 100%;
-            height: 46px;
-            margin-top: 5px;
-            border: 0;
-            border-radius: 9px;
-            background: #263a70;
-            color: #fff;
-            font: 700 13px 'IBM Plex Sans', sans-serif;
-            cursor: pointer;
-            box-shadow: 0 10px 24px rgba(38,58,112,.18);
-            transition: transform .15s ease, background .15s ease;
-          }
-          .hrm-login-button:hover {
-            background: #304982;
-            transform: translateY(-1px);
-          }
-          .hrm-demo-note {
-            margin-top: 15px;
-            padding: 10px 12px;
-            border-radius: 8px;
-            background: #f6f2e8;
-            color: #7b6b48;
-            font-size: 10.5px;
-            line-height: 1.5;
-          }
-          .hrm-login-footer {
-            margin-top: 25px;
-            color: #a0a8b7;
-            font-size: 10px;
-            text-align: center;
-          }
-          @media (max-width: 760px) {
-            .hrm-login-page { padding: 12px; }
-            .hrm-login-shell {
-              grid-template-columns: 1fr;
-              min-height: auto;
-              max-width: 500px;
-            }
-            .hrm-login-brand {
-              min-height: 280px;
-              padding: 28px 24px;
-            }
-            .hrm-login-title { font-size: 36px; }
-            .hrm-login-features { grid-template-columns: 1fr 1fr; }
-            .hrm-login-form { padding: 30px 24px; }
-          }
-          @media (max-width: 420px) {
-            .hrm-login-brand { padding: 23px 18px; }
-            .hrm-login-form { padding: 26px 18px; }
-            .hrm-login-features { grid-template-columns: 1fr; }
-            .hrm-login-title { font-size: 32px; }
-          }
-        `}</style>
+        }
 
-        <div className="hrm-login-shell">
-          <div className="hrm-login-brand">
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, position: "relative", zIndex: 1 }}>
-                <div className="hrm-logo-mark">
-                  <UsersRound size={23} color="#fff" />
-                </div>
-                <div>
-                  <div style={{ fontFamily: "'Space Grotesk'", fontSize: 16, fontWeight: 800, letterSpacing: ".01em" }}>Hastizam Limited</div>
-                  <div style={{ color: "#aebbd7", fontSize: 9.5, marginTop: 2 }}>Garments HR & Payroll</div>
-                </div>
+        @media (max-width: 420px) {
+          .hrm-login-brand {
+            padding: 23px 18px;
+          }
+
+          .hrm-login-form {
+            padding: 26px 18px;
+          }
+
+          .hrm-login-features {
+            grid-template-columns: 1fr;
+          }
+
+          .hrm-login-title {
+            font-size: 32px;
+          }
+        }
+      `}</style>
+
+      <div className="hrm-login-shell">
+
+        {/* LEFT SIDE */}
+        <div className="hrm-login-brand">
+
+          <div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                position: "relative",
+                zIndex: 1,
+              }}
+            >
+              <div className="hrm-logo-mark">
+                <UsersRound size={23} color="#fff" />
               </div>
 
-              <div style={{ position: "relative", zIndex: 1 }}>
-                <div className="hrm-login-title">Human<br />Resource<br /><span style={{ color: "#e7a62a" }}>Management</span></div>
-                <div className="hrm-login-copy">
-                  A clean workspace for employee data, attendance, leave, payroll, payslips and workforce milestones.
+              <div>
+                <div
+                  style={{
+                    fontFamily: "'Space Grotesk'",
+                    fontSize: 16,
+                    fontWeight: 800,
+                    letterSpacing: ".01em",
+                  }}
+                >
+                  Hastizam Limited
                 </div>
 
-                <div className="hrm-login-features">
-                  <div className="hrm-login-feature">Employee Management</div>
-                  <div className="hrm-login-feature">Attendance & Leave</div>
-                  <div className="hrm-login-feature">Payroll & Payslip</div>
-                  <div className="hrm-login-feature">Probation & Increment</div>
+                <div
+                  style={{
+                    color: "#aebbd7",
+                    fontSize: 9.5,
+                    marginTop: 2,
+                  }}
+                >
+                  Garments HR & Payroll
                 </div>
               </div>
             </div>
 
-            <div style={{ position: "relative", zIndex: 1, color: "#8f9dbc", fontSize: 10 }}>
-              © {new Date().getFullYear()} Hastizam Limited · HR & Payroll Workspace
+            <div
+              style={{
+                position: "relative",
+                zIndex: 1,
+              }}
+            >
+              <div className="hrm-login-title">
+                Human
+                <br />
+                Resource
+                <br />
+                <span style={{ color: "#e7a62a" }}>
+                  Management
+                </span>
+              </div>
+
+              <div className="hrm-login-copy">
+                A clean workspace for employee data, attendance,
+                leave, payroll, payslips and workforce milestones.
+              </div>
+
+              <div className="hrm-login-features">
+                <div className="hrm-login-feature">
+                  Employee Management
+                </div>
+
+                <div className="hrm-login-feature">
+                  Attendance & Leave
+                </div>
+
+                <div className="hrm-login-feature">
+                  Payroll & Payslip
+                </div>
+
+                <div className="hrm-login-feature">
+                  Probation & Increment
+                </div>
+              </div>
             </div>
+
           </div>
 
-          <div className="hrm-login-form">
-            <div style={{ marginBottom: 8, color: "#e7a62a", fontSize: 10, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>
-              Secure Workspace
-            </div>
-            <h2>Welcome back</h2>
-            <div className="sub">Sign in to continue to your HRM dashboard.</div>
+          <div
+            style={{
+              position: "relative",
+              zIndex: 1,
+              color: "#8f9dbc",
+              fontSize: 10,
+            }}
+          >
+            © {new Date().getFullYear()} Hastizam Limited · HR & Payroll Workspace
+          </div>
 
-            <label className="hrm-login-label">Username</label>
-            <div className="hrm-login-input-wrap">
-              <UserRound size={15} className="hrm-login-icon" />
-              <input
-                className="hrm-login-input"
-                value={loginUser}
-                onChange={(e) => setLoginUser(e.target.value)}
-                placeholder="Enter username"
-                autoComplete="username"
-              />
-            </div>
+        </div>
 
-            <label className="hrm-login-label">Password</label>
-            <div className="hrm-login-input-wrap">
-              <LockKeyhole size={15} className="hrm-login-icon" />
-              <input
-                className="hrm-login-input"
-                type={showLoginPass ? "text" : "password"}
-                value={loginPass}
-                onChange={(e) => setLoginPass(e.target.value)}
-                placeholder="Enter password"
-                autoComplete="current-password"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onLogin();
-                }}
-              />
-              <button
-                className="hrm-login-eye"
-                type="button"
-                onClick={() => setShowLoginPass((v) => !v)}
-                aria-label="Toggle password visibility"
-              >
-                {showLoginPass ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-            </div>
+        {/* RIGHT SIDE */}
+        <div className="hrm-login-form">
+
+          <div
+            style={{
+              marginBottom: 8,
+              color: "#e7a62a",
+              fontSize: 10,
+              fontWeight: 800,
+              letterSpacing: ".08em",
+              textTransform: "uppercase",
+            }}
+          >
+            Secure Workspace
+          </div>
+
+          <h2>Welcome back</h2>
+
+          <div className="sub">
+            Sign in to continue to your HRM dashboard.
+          </div>
+
+          <label className="hrm-login-label">
+            Username
+          </label>
+
+          <div className="hrm-login-input-wrap">
+
+            <UserRound
+              size={15}
+              className="hrm-login-icon"
+            />
+
+            <input
+              className="hrm-login-input"
+              value={loginUser}
+              onChange={(e) => {
+                setLoginUser(e.target.value);
+                setLoginError("");
+              }}
+              placeholder="Enter username"
+              autoComplete="username"
+              disabled={loading}
+            />
+
+          </div>
+
+          <label className="hrm-login-label">
+            Password
+          </label>
+
+          <div className="hrm-login-input-wrap">
+
+            <LockKeyhole
+              size={15}
+              className="hrm-login-icon"
+            />
+
+            <input
+              className="hrm-login-input"
+              type={showLoginPass ? "text" : "password"}
+              value={loginPass}
+              onChange={(e) => {
+                setLoginPass(e.target.value);
+                setLoginError("");
+              }}
+              placeholder="Enter password"
+              autoComplete="current-password"
+              disabled={loading}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handleLogin();
+                }
+              }}
+            />
 
             <button
-              className="hrm-login-button"
-              onClick={() => onLogin()}
+              className="hrm-login-eye"
+              type="button"
+              onClick={() =>
+                setShowLoginPass((v) => !v)
+              }
+              aria-label="Toggle password visibility"
             >
-              Sign In
+              {showLoginPass ? (
+                <EyeOff size={15} />
+              ) : (
+                <Eye size={15} />
+              )}
             </button>
 
-            <div className="hrm-demo-note">
-              <strong>Interface preview:</strong> Login is visual only for now. No database or real authentication is connected, so any username/password can enter the HRM.
-            </div>
-
-            <div className="hrm-login-footer">
-              Designed for a clean, responsive HR & Payroll experience
-            </div>
           </div>
+
+          {/* LOGIN ERROR */}
+          {loginError && (
+            <div className="hrm-login-error">
+              {loginError}
+            </div>
+          )}
+
+          <form onSubmit={submitLogin}>
+            <button
+  type="submit"
+  className="hrm-login-button"
+  disabled={loading}
+>
+  {loading ? "Signing in..." : "Sign In"}
+</button>
+          </form>
+
+          <div className="hrm-demo-note">
+            <strong>Authorized users only.</strong>{" "}
+            Please use your registered HRM account to continue.
+          </div>
+
+          <div className="hrm-login-footer">
+            Designed for a clean, responsive HR & Payroll experience
+          </div>
+
         </div>
+
       </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------
+   SESSION PERSISTENCE — stores ONLY the sanitized authenticated user
+   returned by /api/auth (id, name, email, role, status).
+   Never stores email/password or any credential material.
+   sessionStorage survives page refreshes but ends when the tab closes.
+------------------------------------------------------------------------- */
+const HRM_SESSION_KEY = "hrm_session_user";
+
+function readHrmSessionUser() {
+  try {
+    const raw = window.sessionStorage.getItem(HRM_SESSION_KEY);
+    if (!raw) return null;
+    const user = JSON.parse(raw);
+    if (user && user.id && user.email) return user;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveHrmSessionUser(user) {
+  try {
+    window.sessionStorage.setItem(
+      HRM_SESSION_KEY,
+      JSON.stringify({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      })
     );
+  } catch (e) {
+    console.error("Session save failed:", e);
+  }
+}
+
+function clearHrmSessionUser() {
+  try {
+    window.sessionStorage.removeItem(HRM_SESSION_KEY);
+  } catch (e) {
+    console.error("Session clear failed:", e);
+  }
+}
+
+/* Clears ONLY authentication/session material. NEVER wipe all of
+   localStorage here — the Workspace persists live HR business data
+   (employees, attendance, payroll) in localStorage under its own keys,
+   and no auth cookies exist in this architecture. */
+function clearSessionData() {
+  clearHrmSessionUser();
+}
+
+/* -------------------------------------------------------------------------
+   AUTH CONTEXT — single source of truth for the authenticated user.
+   login(user)/logout() keep sessionStorage and React state in sync.
+------------------------------------------------------------------------- */
+const AuthContext = createContext(null);
+
+function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => readHrmSessionUser());
+
+  function login(nextUser) {
+    if (!nextUser || !nextUser.id || !nextUser.email) return false;
+    saveHrmSessionUser(nextUser);
+    setUser(nextUser);
+    return true;
+  }
+
+  function logout() {
+    clearSessionData();
+    setUser(null);
+  }
+
+  const value = useMemo(() => ({ user, login, logout }), [user]);
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>");
+  return ctx;
 }
 
 export default function App() {
-  const [stage, setStage] = useState("login"); // login | app
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
+  );
+}
+
+function AppShell() {
+  const { user, login, logout } = useAuth();
+  const [stage, setStage] = useState(() => (user ? "app" : "login")); // login | app
   const [leaving, setLeaving] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
 
   function goTo(next) {
     setLeaving(true);
@@ -5515,9 +6394,31 @@ export default function App() {
     }, 260);
   }
 
+  function showToast(message) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ id: Date.now(), message });
+    toastTimerRef.current = setTimeout(() => setToast(null), 3200);
+  }
+
+  function handleAuthenticatedLogin(nextUser) {
+    if (!login(nextUser)) return;
+    goTo("app");
+  }
+
+  function handleLogout() {
+    logout();
+    goTo("login");
+    showToast("You have been signed out successfully.");
+  }
+
+  // Protected-route equivalent: if the session disappears for ANY reason
+  // (any module calling useAuth().logout() directly, cleared storage),
+  // the app drops back to the login stage immediately.
+  const activeStage = stage === "app" && !user ? "login" : stage;
+
   return (
     <div style={{ minHeight: "100vh", width: "100%" }}>
-      <style>{FONT_CSS}{STAGE_TRANSITION_CSS}{`
+      <style>{FONT_CSS}{STAGE_TRANSITION_CSS}{GLOBAL_LAYOUT_CSS}{`
       html, body, #root { width: 100%; min-height: 100%; margin: 0; padding: 0; }
       body { overflow-x: hidden; }
       .hr-app, .hr-shell, .ledger-shell { width: 100%; min-height: 100vh; }
@@ -5566,10 +6467,22 @@ export default function App() {
         .login-page form { padding-top: 26px !important; padding-bottom: 26px !important; }
       }
     `}</style>
-      <div key={stage} className={leaving ? "stage-leave" : "stage-enter"}>
-        {stage === "login" && <TopHRLoginPage onLogin={() => goTo("app")} />}
-        {stage === "app" && <Workspace />}
+      <div key={activeStage} className={leaving ? "stage-leave" : "stage-enter"}>
+        {activeStage === "login" && (
+  <TopHRLoginPage
+    onLogin={handleAuthenticatedLogin}
+  />
+)}
+        {activeStage === "app" && <Workspace onLogout={handleLogout} />}
       </div>
+      {toast && (
+        <div key={toast.id} className="hrm-toast" role="status">
+          <CheckCircle2 size={15} color={HR_T.good} />
+          <span style={{ fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5, fontWeight: 600, color: HR_T.ink }}>
+            {toast.message}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
