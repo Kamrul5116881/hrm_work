@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Employee {
+  id String @id @default(cuid())
+  employeeId String @unique
+  name String
+  joiningDate String?
+  jobTitle String?
+  section String?
+  basic Float @default(0)
+  houseRent Float @default(0)
+  conveyance Float @default(0)
+  food Float @default(0)
+  medical Float @default(0)
+  gross Float @default(0)
+  casualLeaveAlloc Float @default(10)
+  medicalLeaveAlloc Float @default(14)
+  motherName String?
+  fatherName String?
+  dob String?
+  nid String?
+  maritalStatus String @default("Single")
+  status String @default("New Join")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  attendance Attendance[]
+  leaveRequests LeaveRequest[]
+  overtimeEntries Overtime[]
+  payrollRecords Payroll[]
+  increments Increment[]
+  separation Separation?
+}
+
+model Attendance {
+  id String @id @default(cuid())
+  employeeId String
+  month String
+  present Float @default(0)
+  weekend Float @default(0)
+  leave Float @default(0)
+  absent Float @default(0)
+  otHours Float @default(0)
+  advance Float @default(0)
+  arrear Float @default(0)
+  tds Float @default(0)
+  basic Float?
+  medical Float?
+  conveyance Float?
+  food Float?
+  gross Float?
+  totalDays Float @default(0)
+  payableDays Float @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  @@unique([employeeId, month])
+  @@index([month])
+}
+
+model LeaveRequest {
+  id String @id @default(cuid())
+  employeeId String
+  leaveType String
+  startDate String
+  endDate String
+  totalDays Float
+  reason String?
+  status String @default("Pending")
+  approvedBy String?
+  approvedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  @@index([employeeId])
+}
+
+model Overtime {
+  id String @id @default(cuid())
+  employeeId String
+  date String
+  hours Float
+  rate Float @default(0)
+  amount Float @default(0)
+  status String @default("Approved")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  @@index([employeeId, date])
+}
+
+model Payroll {
+  id String @id @default(cuid())
+  employeeId String
+  month String
+  basic Float @default(0)
+  houseRent Float @default(0)
+  conveyance Float @default(0)
+  food Float @default(0)
+  medical Float @default(0)
+  gross Float @default(0)
+  totalDays Float @default(0)
+  payableDays Float @default(0)
+  present Float @default(0)
+  weekend Float @default(0)
+  leave Float @default(0)
+  absent Float @default(0)
+  paySalary Float @default(0)
+  absentAmount Float @default(0)
+  otRate Float @default(0)
+  otHours Float @default(0)
+  otAmount Float @default(0)
+  actualAmount Float @default(0)
+  advance Float @default(0)
+  arrear Float @default(0)
+  payBeforeTds Float @default(0)
+  tds Float @default(0)
+  payAmount Float @default(0)
+  status String @default("Draft")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  @@unique([employeeId, month])
+  @@index([month])
+}
+
+model PayrollApproval {
+  id String @id @default(cuid())
+  month String @unique
+  approved Boolean @default(false)
+  approvedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model HrRule {
+  id Int @id @default(1)
+  payDaysDivisor Float @default(31)
+  absentDaysDivisor Float @default(30)
+  otDivisor Float @default(104)
+  basicDivisor Float @default(1.5)
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id String @id @default(cuid())
+  name String
+  email String @unique
+  passwordHash String
+  role String @default("HR")
+  status String @default("Active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Increment {
+  id String @id @default(cuid())
+  employeeId String
+  effectiveDate String
+  oldGross Float @default(0)
+  newGross Float @default(0)
+  amount Float @default(0)
+  percentage Float?
+  reason String?
+  createdAt DateTime @default(now())
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  @@index([employeeId, effectiveDate])
+}
+
+model Separation {
+  id String @id @default(cuid())
+  employeeId String @unique
+  separationDate String
+  separationType String
+  reason String?
+  noticePeriod Float?
+  lastWorkingDay String?
+  finalSettlement Float?
+  remarks String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+}
