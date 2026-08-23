@@ -187,3 +187,28 @@ model Separation {
   updatedAt DateTime @updatedAt
   employee Employee @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
 }
+
+model LedgerTransaction {
+  id            String   @id
+  date          String?
+  cheque        String?
+  chequeDate    String?
+  vendor        String?
+  paymentType   String?
+  particular    String?
+  vendorAddress String?
+  tin           String?
+  bin           String?
+  mainGL        String?
+  subGL         String?
+  sectionRef    String?
+  invoiceAmount Float    @default(0)
+  condition     String?
+  tdsRate       Float    @default(0)
+  vdsRate       Float    @default(0)
+  remarks       String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([vendor])
+}

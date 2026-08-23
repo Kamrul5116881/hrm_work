@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { createToken } from "./_lib/auth.js";
 
 const prisma = new PrismaClient();
 
@@ -59,6 +60,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       message: "Login successful.",
+      token: createToken(user),
       user: {
         id: user.id,
         name: user.name,

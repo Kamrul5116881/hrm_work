@@ -780,13 +780,7 @@ async function saveToStorage(key, data) {
   return savedSomewhere;
 }
 
-// Thin wrappers — unchanged call sites/behavior for the existing ledger.
-async function loadRecords() {
-  return loadFromStorage(STORAGE_KEY);
-}
-async function saveRecords(records) {
-  return saveToStorage(STORAGE_KEY, records);
-}
+/* Ledger records load/save now live in the Supabase-backed STORAGE section below. */
 
 /* ---------------------------------------------------------------------
    SHARED UI BITS
@@ -2863,8 +2857,14 @@ async function parseAttendanceExcel(file, employees) {
 
 /* =========================================================================
    STORAGE
+   Supabase (via /api/* API + Prisma) is the source of truth.
+   Pattern for every dataset: instant local-cache paint, then a network
+   refresh; saves mirror locally immediately but return TRUE only after
+   the database confirms the write.
 ========================================================================= */
 const SKEY = "hrms:v1";
+const HRM_SESSION_TOKEN_KEY = "hrm_session_token";
+
 function hrHasArtifactStorage() {
   return typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
 }
@@ -2872,23 +2872,169 @@ function hrHasLocalStorage() {
   try { const k = "__hrms_probe__"; window.localStorage.setItem(k, "1"); window.localStorage.removeItem(k); return true; }
   catch (e) { return false; }
 }
-async function loadState() {
-  if (hrHasArtifactStorage()) {
-    try { const res = await window.storage.get(SKEY); if (res && res.value) return JSON.parse(res.value); }
-    catch (e) { /* not present yet */ }
-  }
-  if (hrHasLocalStorage()) {
-    try { const v = window.localStorage.getItem(SKEY); if (v) return JSON.parse(v); }
-    catch (e) { console.error(e); }
-  }
+function hrGetAuthToken() {
+  try { return window.sessionStorage.getItem(HRM_SESSION_TOKEN_KEY); } catch { return null; }
+}
+function readLocalJson(key) {
+  try {
+    if (hrHasLocalStorage()) {
+      const v = window.localStorage.getItem(key);
+      if (v) return JSON.parse(v);
+    }
+  } catch (e) { console.error(e); }
   return null;
 }
-async function saveState(state) {
-  const payload = JSON.stringify(state);
+function writeLocalJson(key, value) {
   let ok = false;
-  if (hrHasArtifactStorage()) { try { await window.storage.set(SKEY, payload, false); ok = true; } catch (e) { console.error(e); } }
-  if (hrHasLocalStorage()) { try { window.localStorage.setItem(SKEY, payload); ok = true; } catch (e) { console.error(e); } }
+  const payload = JSON.stringify(value);
+  if (hrHasLocalStorage()) { try { window.localStorage.setItem(key, payload); ok = true; } catch (e) { console.error(e); } }
   return ok;
+}
+async function readArtifactJson(key) {
+  if (!hrHasArtifactStorage()) return null;
+  try { const res = await window.storage.get(key); if (res && res.value) return JSON.parse(res.value); } catch {}
+  return null;
+}
+async function writeArtifactJson(key, value) {
+  if (!hrHasArtifactStorage()) return false;
+  try { await window.storage.set(key, JSON.stringify(value), false); return true; } catch (e) { console.error(e); return false; }
+}
+async function apiGet(path) {
+  const token = hrGetAuthToken();
+  if (!token) throw Object.assign(new Error("not signed in"), { code: "NOAUTH" });
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    const err = new Error(`GET ${path} failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+async function apiPost(path, bodyObj) {
+  const token = hrGetAuthToken();
+  if (!token) throw Object.assign(new Error("not signed in"), { code: "NOAUTH" });
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(bodyObj),
+  });
+  if (!res.ok) {
+    const err = new Error(`POST ${path} failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+/* ---------- HR state ---------- */
+function normalizeLoadedState(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (!Array.isArray(raw.employees) && !Array.isArray(raw.attendanceRecords)) return null;
+  // payrollRecords (server-derived Payroll ledger) is not needed client-side — skip caching it.
+  const { payrollRecords, ...clean } = raw;
+  return {
+    employees: clean.employees || [],
+    attendanceRecords: clean.attendanceRecords || [],
+    payrollApprovals: clean.payrollApprovals || {},
+    rules: clean.rules || undefined,
+    ...clean,
+  };
+}
+async function loadCachedState() {
+  const artifact = await readArtifactJson(SKEY);
+  if (artifact) return artifact;
+  return readLocalJson(SKEY);
+}
+async function fetchServerState() {
+  const data = await apiGet("/api/state");
+  const normalized = normalizeLoadedState(data.state);
+  if (normalized) writeLocalJson(SKEY, normalized); // refresh offline cache
+  return normalized === null ? (data.state ? {} : null) : normalized;
+}
+async function loadState() {
+  const cached = await loadCachedState();
+  if (cached) return cached;
+  try { return await fetchServerState(); } catch (e) { console.error("State fetch failed:", e.message); return null; }
+}
+let hrSaveChain = Promise.resolve();
+let hrPendingSave; // latest state waiting to be sent; undefined = nothing pending
+async function saveState(state) {
+  /* Saves are serialized: only ONE POST is ever in flight, and each queued
+     run sends the LATEST state (intermediate keystroke snapshots are
+     coalesced). Overlapping full-state replaces used to commit out of
+     order on slow links — an older snapshot could land last and wipe
+     newer payroll entries (they "vanished" after a reload). */
+  writeLocalJson(SKEY, state);
+  void writeArtifactJson(SKEY, state);
+  hrPendingSave = state;
+  const attempt = async () => {
+    if (hrPendingSave === undefined) return true; // superseded by a newer save that already carried this data
+    const payload = hrPendingSave;
+    hrPendingSave = undefined;
+    try {
+      const data = await apiPost("/api/state", { state: payload });
+      return data.ok === true;
+    } catch (e) {
+      if (e.status === 401) console.error("Save rejected: session expired.");
+      else if (e.status === 403) console.error("Save rejected: your role cannot modify HR data.");
+      else console.error("Database unreachable during save:", e.message);
+      return false;
+    }
+  };
+  const result = hrSaveChain.then(attempt, attempt);
+  hrSaveChain = result.then(() => {}, () => {});
+  return result;
+}
+
+/* Computed salary rows (what the Payroll tab renders) are materialized into
+   the Supabase "Payroll" table by the SERVER on every save — see api/state.js.
+   The client does not need to send them. */
+
+/* ---------- Ledger records ---------- */
+async function loadCachedLedger(key) {
+  const artifact = await readArtifactJson(key);
+  if (artifact) return artifact;
+  return readLocalJson(key);
+}
+async function fetchServerLedger() {
+  const data = await apiGet("/api/ledger");
+  if (!Array.isArray(data.records)) return null;
+  writeLocalJson(STORAGE_KEY, data.records);
+  return data.records;
+}
+async function loadRecords() {
+  const cached = await loadCachedLedger(STORAGE_KEY);
+  if (cached !== null) return cached;
+  try { return await fetchServerLedger(); } catch (e) { console.error("Ledger fetch failed:", e.message); return null; }
+}
+async function saveRecords(records) {
+  writeLocalJson(STORAGE_KEY, records);
+  await writeArtifactJson(STORAGE_KEY, records);
+  try {
+    const data = await apiPost("/api/ledger", { records });
+    return data.ok === true;
+  } catch (e) {
+    if (e.status === 401) console.error("Ledger save rejected: session expired.");
+    else if (e.status === 403) console.error("Ledger save rejected: role not permitted.");
+    else console.error("Database unreachable during ledger save:", e.message);
+    return false;
+  }
+}
+
+/* ---------- Global save-status bus (drives the on-screen sync chip) ---------- */
+const syncListeners = new Set();
+function emitSync(status) { syncListeners.forEach((f) => { try { f(status); } catch {} }); }
+function useSyncStatus() {
+  const [status, setStatus] = useState("idle");
+  useEffect(() => {
+    const fn = (s) => setStatus(s);
+    syncListeners.add(fn);
+    return () => syncListeners.delete(fn);
+  }, []);
+  useEffect(() => {
+    if (status === "saved") { const t = setTimeout(() => setStatus("idle"), 2500); return () => clearTimeout(t); }
+  }, [status]);
+  return status;
 }
 
 /* =========================================================================
@@ -4531,19 +4677,42 @@ function HRApp() {
   const [importBusy, setImportBusy] = useState(false);
   const [empImportResult, setEmpImportResult] = useState(null);
 
+  const loadGenRef = useRef(0);
+  const hrAppliedRef = useRef(false);
   useEffect(() => {
+    const gen = ++loadGenRef.current;
+    let cancelled = false;
+    // Phase 1: instant paint from local cache (no waiting on the network)
+    loadCachedState().then((cached) => {
+      if (cancelled || gen !== loadGenRef.current || hrAppliedRef.current) return;
+      hrAppliedRef.current = true;
+      setState(cached ? { rules: DEFAULT_RULES, payrollApprovals: {}, ...cached } : { employees: [], attendanceRecords: [], payrollApprovals: {}, rules: DEFAULT_RULES });
+    });
+    // Phase 2: authoritative refresh from Supabase
     (async () => {
-      const stored = await loadState();
-      if (stored) setState({ rules: DEFAULT_RULES, payrollApprovals: {}, ...stored });
-      else setState({ employees: [], attendanceRecords: [], payrollApprovals: {}, rules: DEFAULT_RULES });
+      try {
+        const server = await fetchServerState();
+        if (cancelled || gen !== loadGenRef.current) return;
+        if (server) {
+          hrAppliedRef.current = true;
+          setState({ rules: DEFAULT_RULES, payrollApprovals: {}, ...server });
+        }
+      } catch (e) {
+        console.error("HR state refresh failed — showing cached data:", e.message);
+      }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   const persist = useCallback(async (next) => {
+    loadGenRef.current++; // any in-flight server refresh is now stale
+    hrAppliedRef.current = true;
     setState(next);
     setSaveStatus("saving");
+    emitSync("saving");
     const ok = await saveState(next);
     setSaveStatus(ok ? "saved" : "error");
+    emitSync(ok ? "saved" : "error");
   }, []);
 
   useEffect(() => {
@@ -4951,7 +5120,7 @@ function LoginPage({ onLogin, onBack }) {
 
     // IMPORTANT:
     // Dashboard ONLY opens after successful authentication
-    onLogin(data.user);
+    onLogin(data.user, data.token);
 
   } catch (err) {
     console.error("AUTH ERROR:", err);
@@ -5278,28 +5447,48 @@ function LedgerApp() {
   const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved | error
   const [lastSavedAt, setLastSavedAt] = useState(null);
 
+  const ledgerLoadGenRef = useRef(0);
+  const ledgerAppliedRef = useRef(false);
   useEffect(() => {
-    (async () => {
-      const stored = await loadRecords();
-      if (stored !== null) {
-        // Saved data exists — even an empty list means "user cleared it",
-        // and must NOT be overwritten by anything else.
-        setRecords(stored);
+    const gen = ++ledgerLoadGenRef.current;
+    let cancelled = false;
+    // Phase 1: instant paint from local cache
+    loadCachedLedger(STORAGE_KEY).then((cached) => {
+      if (cancelled || gen !== ledgerLoadGenRef.current || ledgerAppliedRef.current) return;
+      ledgerAppliedRef.current = true;
+      if (cached !== null) {
+        setRecords(cached);
         setIsDefaultData(false);
       } else {
-        // Nothing saved yet — start empty. No sample data is shown by default.
         setRecords([]);
         setIsDefaultData(true);
       }
+    });
+    // Phase 2: authoritative refresh from Supabase
+    (async () => {
+      try {
+        const server = await fetchServerLedger();
+        if (cancelled || gen !== ledgerLoadGenRef.current || server === null) return;
+        ledgerAppliedRef.current = true;
+        setRecords(server);
+        setIsDefaultData(false);
+      } catch (e) {
+        console.error("Ledger refresh failed — showing cached data:", e.message);
+      }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   const persist = useCallback(async (next) => {
+    ledgerLoadGenRef.current++; // invalidate in-flight refresh
+    ledgerAppliedRef.current = true;
     setRecords(next);
     setIsDefaultData(false);
     setSaveStatus("saving");
+    emitSync("saving");
     const ok = await saveRecords(next);
     setSaveStatus(ok ? "saved" : "error");
+    emitSync(ok ? "saved" : "error");
     if (ok) setLastSavedAt(new Date());
   }, []);
 
@@ -5759,7 +5948,7 @@ function TopHRLoginPage({ onLogin }) {
 
       // IMPORTANT:
       // Dashboard will open ONLY after successful authentication.
-      onLogin(data.user);
+      onLogin(data.user, data.token);
 
     } catch (error) {
       console.error("Login error:", error);
@@ -6338,6 +6527,7 @@ function clearHrmSessionUser() {
    and no auth cookies exist in this architecture. */
 function clearSessionData() {
   clearHrmSessionUser();
+  try { window.sessionStorage.removeItem(HRM_SESSION_TOKEN_KEY); } catch {}
 }
 
 /* -------------------------------------------------------------------------
@@ -6349,9 +6539,11 @@ const AuthContext = createContext(null);
 function AuthProvider({ children }) {
   const [user, setUser] = useState(() => readHrmSessionUser());
 
-  function login(nextUser) {
+  function login(nextUser, nextToken) {
     if (!nextUser || !nextUser.id || !nextUser.email) return false;
+    if (!nextToken) return false; // never accept a session without its token
     saveHrmSessionUser(nextUser);
+    try { window.sessionStorage.setItem(HRM_SESSION_TOKEN_KEY, nextToken); } catch (e) { console.error("Token save failed:", e); }
     setUser(nextUser);
     return true;
   }
@@ -6369,6 +6561,44 @@ function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>");
   return ctx;
+}
+
+/* ---------- On-screen sync indicator ---------- */
+function SyncChip() {
+  const status = useSyncStatus();
+  if (status === "idle") return null;
+  const map = {
+    saving: { border: HR_T.line, color: HR_T.inkSoft, dot: HR_T.amber, label: "Saving to Supabase…" },
+    saved: { border: "#BFDCC8", color: HR_T.good, dot: HR_T.good, label: "All changes saved" },
+    error: { border: "#F3C4B8", color: HR_T.bad, dot: HR_T.bad, label: "Save failed — data is NOT stored. Check your connection." },
+  };
+  const s = map[status] || map.saving;
+  return (
+    <div
+      role="status"
+      style={{
+        position: "fixed",
+        left: 22,
+        bottom: 22,
+        zIndex: 1150,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "9px 14px",
+        borderRadius: 9,
+        background: "#fff",
+        border: `1px solid ${s.border}`,
+        boxShadow: "0 10px 30px rgba(20,27,48,.16)",
+        fontFamily: "'IBM Plex Sans', sans-serif",
+        fontSize: 12,
+        fontWeight: 600,
+        color: s.color,
+      }}
+    >
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.dot, display: "inline-block" }} />
+      {s.label}
+    </div>
+  );
 }
 
 export default function App() {
@@ -6400,8 +6630,8 @@ function AppShell() {
     toastTimerRef.current = setTimeout(() => setToast(null), 3200);
   }
 
-  function handleAuthenticatedLogin(nextUser) {
-    if (!login(nextUser)) return;
+  function handleAuthenticatedLogin(nextUser, nextToken) {
+    if (!login(nextUser, nextToken)) return;
     goTo("app");
   }
 
@@ -6483,6 +6713,7 @@ function AppShell() {
           </span>
         </div>
       )}
+      <SyncChip />
     </div>
   );
 }
