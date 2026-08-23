@@ -4083,21 +4083,49 @@ function PayrollHistory({ employees, attendanceRecords, payrollApprovals, rules 
    DASHBOARD
 ========================================================================= */
 function HRDashboard({ employees, attendanceRecords, rules }) {
+  const [dashMode, setDashMode] = useState("monthly"); // "monthly" | "yearly"
+  const [dashMonth, setDashMonth] = useState(""); // month key or year, depending on dashMode
   const total = employees.length;
   const active = employees.filter((e) => ACTIVE_STATUSES.includes(e.status)).length;
   const newJoiners = employees.filter((e) => e.status === "New Join").length;
   const resigned = employees.filter((e) => e.status === "Resigned" || e.status === "Terminated").length;
 
-  const latestMonth = useMemo(() => {
-    const months = Array.from(new Set(attendanceRecords.map((r) => r.month))).sort();
-    return months[months.length - 1];
-  }, [attendanceRecords]);
-  const latestRecs = attendanceRecords.filter((r) => r.month === latestMonth);
-  const byId = useMemo(() => new Map(employees.map((e) => [e.employeeId, e])), [employees]);
-  const absentToday = latestRecs.filter((r) => num(r.absent) > 0).length;
-  const onLeaveCount = latestRecs.filter((r) => num(r.leave) > 0).length;
+  /* Dashboard period filter: Monthly = single-month stats, Yearly = aggregates across the whole year. */
+  const dashMonths = useMemo(() => Array.from(new Set(attendanceRecords.map((r) => r.month).filter(Boolean))).sort().reverse(), [attendanceRecords]);
+  const dashYears = useMemo(() => Array.from(new Set(dashMonths.map((m) => m.slice(0, 4)))).sort().reverse(), [dashMonths]);
+  useEffect(() => {
+    if (!dashMonths.length) return;
+    const pool = dashMode === "yearly" ? dashYears : dashMonths;
+    if (!pool.includes(dashMonth)) setDashMonth(pool[0] || "");
+  }, [dashMonths, dashYears, dashMode, dashMonth]);
+  function changeDashMode(mode) {
+    if (mode === dashMode) return;
+    if (!dashMonth) { setDashMode(mode); return; }
+    const year = dashMonth.slice(0, 4);
+    if (mode === "yearly") {
+      setDashMode("yearly");
+      setDashMonth(year);
+    } else {
+      const inYear = dashMonths.filter((m) => m.startsWith(year));
+      setDashMode("monthly");
+      setDashMonth(inYear[0] || dashMonths[0] || "");
+    }
+  }
+  const scopeLabel = !dashMonth ? "—" : dashMode === "yearly" ? dashMonth : monthLabel(dashMonth);
+  const scopedRecs = useMemo(() => {
+    if (!dashMonth) return [];
+    return dashMode === "yearly"
+      ? attendanceRecords.filter((r) => String(r.month || "").startsWith(dashMonth))
+      : attendanceRecords.filter((r) => r.month === dashMonth);
+  }, [attendanceRecords, dashMode, dashMonth]);
 
-  const totals = latestRecs.reduce((a, r) => {
+  const byId = useMemo(() => new Map(employees.map((e) => [e.employeeId, e])), [employees]);
+  const onLeaveCount = new Set(scopedRecs.filter((r) => num(r.leave) > 0).map((r) => r.employeeId)).size;
+  const absentCount = dashMode === "yearly"
+    ? scopedRecs.reduce((s, r) => s + num(r.absent), 0)
+    : scopedRecs.filter((r) => num(r.absent) > 0).length;
+
+  const totals = scopedRecs.reduce((a, r) => {
     const emp = byId.get(r.employeeId);
     if (!emp) return a;
     const c = computePayroll(emp, r, rules);
@@ -4119,17 +4147,34 @@ function HRDashboard({ employees, attendanceRecords, rules }) {
 
   return (
     <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <span style={{ fontFamily: "'IBM Plex Sans'", fontSize: 11, fontWeight: 700, color: HR_T.muted, letterSpacing: ".05em", textTransform: "uppercase" }}>Dashboard period</span>
+        {[["monthly", "Monthly"], ["yearly", "Yearly"]].map(([m, label]) => (
+          <button key={m} onClick={() => changeDashMode(m)} style={{
+            padding: "5px 14px", borderRadius: 20, cursor: "pointer",
+            fontFamily: "'IBM Plex Sans'", fontSize: 12, fontWeight: 600,
+            border: `1px solid ${dashMode === m ? HR_T.indigo : HR_T.line}`,
+            background: dashMode === m ? HR_T.indigo : "#fff",
+            color: dashMode === m ? "#fff" : HR_T.inkSoft,
+          }}>{label}</button>
+        ))}
+        <HrTSelect value={dashMonth} onChange={(e) => setDashMonth(e.target.value)} style={{ maxWidth: 170 }}>
+          {(dashMode === "yearly" ? dashYears : dashMonths).map((v) => (
+            <option key={v} value={v}>{dashMode === "yearly" ? v : monthLabel(v)}</option>
+          ))}
+        </HrTSelect>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18 }}>
         <HrStatCard icon={Users} label="Total Employees" value={total} sub={`${active} active`} />
         <HrStatCard icon={Package} label="New Joiners" value={newJoiners} tone="amber" />
         <HrStatCard icon={TrendingDown} label="Resigned / Terminated" value={resigned} tone="bad" />
-        <HrStatCard icon={Umbrella} label={`On Leave (${latestMonth ? monthLabel(latestMonth) : "—"})`} value={onLeaveCount} />
+        <HrStatCard icon={Umbrella} label={`On Leave (${scopeLabel})`} value={onLeaveCount} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 22 }}>
-        <HrStatCard icon={AlertCircle} label={`Absent (${latestMonth ? monthLabel(latestMonth) : "—"})`} value={absentToday} tone="bad" />
-        <HrStatCard icon={Wallet} label="Payroll (latest month)" value={`৳ ${hrMoney(totals.payroll)}`} tone="good" />
-        <HrStatCard icon={TrendingUp} label="Overtime (latest month)" value={`৳ ${hrMoney(totals.ot)}`} tone="amber" />
-        <HrStatCard icon={CalendarCheck} label="Leave Days Used (latest)" value={totals.leave} />
+        <HrStatCard icon={AlertCircle} label={dashMode === "yearly" ? `Absent Days (${scopeLabel})` : `Absent (${scopeLabel})`} value={absentCount} tone="bad" />
+        <HrStatCard icon={Wallet} label={`Payroll (${scopeLabel})`} value={`৳ ${hrMoney(totals.payroll)}`} tone="good" />
+        <HrStatCard icon={TrendingUp} label={`Overtime (${scopeLabel})`} value={`৳ ${hrMoney(totals.ot)}`} tone="amber" />
+        <HrStatCard icon={CalendarCheck} label={`Leave Days Used (${scopeLabel})`} value={totals.leave} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
