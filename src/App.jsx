@@ -4673,6 +4673,8 @@ function HRApp() {
   const [saveStatus, setSaveStatus] = useState("idle");
   const [attMonth, setAttMonth] = useState("");
   const [payMonth, setPayMonth] = useState("");
+  const [periodMode, setPeriodMode] = useState("monthly"); // "monthly" | "yearly"
+  const [periodValue, setPeriodValue] = useState(""); // month key ("2026-09") or year ("2026")
   const fileInputRef = useRef(null);
   const [importBusy, setImportBusy] = useState(false);
   const [empImportResult, setEmpImportResult] = useState(null);
@@ -4721,6 +4723,38 @@ function HRApp() {
     if (!attMonth && months[0]) setAttMonth(months[0]);
     if (!payMonth && months[0]) setPayMonth(months[0]);
   }, [state, attMonth, payMonth]);
+
+  /* ---- Period filter: Monthly shows one month, Yearly aggregates the whole year.
+     Drives every data view (dashboard, leave, history, reports) and the month
+     pickers of the Attendance & Payroll tabs. ---- */
+  const periodMonths = useMemo(() => Array.from(new Set((state ? state.attendanceRecords : []).map((r) => r.month).filter(Boolean))).sort().reverse(), [state]);
+  const periodYears = useMemo(() => Array.from(new Set(periodMonths.map((m) => m.slice(0, 4)))).sort().reverse(), [periodMonths]);
+  const visibleRecords = useMemo(() => {
+    const all = state ? state.attendanceRecords : [];
+    if (!periodValue) return all;
+    return periodMode === "monthly" ? all.filter((r) => r.month === periodValue) : all.filter((r) => String(r.month || "").startsWith(periodValue));
+  }, [state, periodMode, periodValue]);
+  useEffect(() => {
+    if (!periodMonths.length) return;
+    const pool = periodMode === "yearly" ? periodYears : periodMonths;
+    if (!pool.includes(periodValue)) setPeriodValue(pool[0] || "");
+  }, [periodMonths, periodYears, periodMode, periodValue]);
+  useEffect(() => {
+    if (periodMode === "monthly" && periodValue) { setAttMonth(periodValue); setPayMonth(periodValue); }
+  }, [periodMode, periodValue]);
+  function changePeriodMode(mode) {
+    if (mode === periodMode) return;
+    if (!periodValue) { setPeriodMode(mode); return; }
+    const year = periodValue.slice(0, 4);
+    if (mode === "yearly") {
+      setPeriodMode("yearly");
+      setPeriodValue(year);
+    } else {
+      const inYear = periodMonths.filter((m) => m.startsWith(year));
+      setPeriodMode("monthly");
+      setPeriodValue(inYear[0] || periodMonths[0] || "");
+    }
+  }
 
   if (!state) {
     return <div style={{ padding: 40, fontFamily: "'IBM Plex Sans'", color: HR_T.muted }}>Loading HR system…</div>;
@@ -4960,7 +4994,27 @@ function HRApp() {
             )}
           </div>
 
-          {tab === "dashboard" && <HRDashboard employees={state.employees} attendanceRecords={state.attendanceRecords} rules={state.rules} />}
+          {["dashboard", "attendance", "leave", "payroll", "payrollHistory", "reports"].includes(tab) && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+              <span style={{ fontFamily: "'IBM Plex Sans'", fontSize: 11, fontWeight: 700, color: HR_T.muted, letterSpacing: ".05em", textTransform: "uppercase" }}>View by</span>
+              {[["monthly", "Monthly"], ["yearly", "Yearly"]].map(([m, label]) => (
+                <button key={m} onClick={() => changePeriodMode(m)} style={{
+                  padding: "6px 16px", borderRadius: 20, cursor: "pointer",
+                  fontFamily: "'IBM Plex Sans'", fontSize: 12.5, fontWeight: 600,
+                  border: `1px solid ${periodMode === m ? HR_T.indigo : HR_T.line}`,
+                  background: periodMode === m ? HR_T.indigo : "#fff",
+                  color: periodMode === m ? "#fff" : HR_T.inkSoft,
+                }}>{label}</button>
+              ))}
+              <HrTSelect value={periodValue} onChange={(e) => setPeriodValue(e.target.value)} style={{ maxWidth: 170 }}>
+                {(periodMode === "monthly" ? periodMonths : periodYears).map((v) => (
+                  <option key={v} value={v}>{periodMode === "monthly" ? monthLabel(v) : v}</option>
+                ))}
+              </HrTSelect>
+            </div>
+          )}
+
+          {tab === "dashboard" && <HRDashboard employees={state.employees} attendanceRecords={visibleRecords} rules={state.rules} />}
 
           {tab === "employees" && !showEmployeeForm && !profileEmployee && (
             <>
@@ -4994,7 +5048,7 @@ function HRApp() {
           {tab === "attendance" && (
             <AttendanceManagement employees={state.employees} attendanceRecords={state.attendanceRecords} onImport={handleImportAttendance} monthPicker={attMonth} setMonthPicker={setAttMonth} />
           )}
-          {tab === "leave" && <LeaveManagement employees={state.employees} attendanceRecords={state.attendanceRecords} />}
+          {tab === "leave" && <LeaveManagement employees={state.employees} attendanceRecords={visibleRecords} />}
           {tab === "payroll" && (
             <PayrollManagement
               employees={state.employees} attendanceRecords={state.attendanceRecords} payrollApprovals={state.payrollApprovals}
@@ -5002,9 +5056,9 @@ function HRApp() {
               monthPicker={payMonth} setMonthPicker={setPayMonth}
             />
           )}
-          {tab === "payrollHistory" && <PayrollHistory employees={state.employees} attendanceRecords={state.attendanceRecords} payrollApprovals={state.payrollApprovals} rules={state.rules} />}
+          {tab === "payrollHistory" && <PayrollHistory employees={state.employees} attendanceRecords={visibleRecords} payrollApprovals={state.payrollApprovals} rules={state.rules} />}
           {tab === "probation" && <ProbationIncrementTracker employees={state.employees} onMakeRegular={handleMakeRegular} />}
-          {tab === "reports" && <HRReports employees={state.employees} attendanceRecords={state.attendanceRecords} rules={state.rules} />}
+          {tab === "reports" && <HRReports employees={state.employees} attendanceRecords={visibleRecords} rules={state.rules} />}
           {tab === "settings" && <HRSettings rules={state.rules} setRules={setRules} sections={sections} jobTitles={jobTitles} />}
         </div>
       </div>
