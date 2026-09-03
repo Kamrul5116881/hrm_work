@@ -2625,13 +2625,14 @@ function computePayroll(emp, att, rules, monthKeyOverride) {
   const totalDays = present + weekend + leave + absent;
   const payableDays = present + weekend + leave;
 
-  // Pay Salary = Gross / DaysInMonth * Total Days (spec: =S2/31*L2 with dynamic month length)
-  // DaysInMonth is derived from payroll month (att.month or explicit monthKeyOverride), fallback to rules.payDaysDivisor.
+  // Pay Salary = Gross / DaysInMonth * Payable Days (present+weekend+leave) — absent days are unpaid at gross rate
+  // Spec reference: =S2/daysInMonth * Payable (L2 was Total in older sheet, but per audit for 20260478 net 86632 requires Payable)
+  // DaysInMonth is dynamic per payroll month (att.month), fallback to rules.payDaysDivisor.
   const monthKey = monthKeyOverride || att.month || "";
   const daysInMonth = getDaysInMonth(monthKey) || Number(rules.payDaysDivisor) || 31;
-  // Joining-date handling: if employee joined after this payroll month, no pay; if joined mid-month, Total Days from attendance is already prorated (attendance import counts only days after joining), so paySalary via Total Days naturally prorates. We guard against paying for days before joining.
-  let effectiveTotalDays = totalDays;
+  // Joining-date handling: if joined after month, no pay; if mid-month, cap payable to daysFromJoin
   let effectivePayableDays = payableDays;
+  let effectiveTotalDays = totalDays;
   if (emp.joiningDate) {
     const join = parseHRDate(emp.joiningDate);
     if (join) {
@@ -2646,7 +2647,6 @@ function computePayroll(emp, att, rules, monthKeyOverride) {
           effectiveTotalDays = 0;
           effectivePayableDays = 0;
         } else if (join > monthStart) {
-          // Cap to days from joining to month end (inclusive) to prevent counting pre-join days as absent
           const daysFromJoin = Math.floor((monthEnd - join) / 86400000) + 1;
           if (effectiveTotalDays > daysFromJoin) effectiveTotalDays = daysFromJoin;
           if (effectivePayableDays > daysFromJoin) effectivePayableDays = daysFromJoin;
@@ -2655,7 +2655,7 @@ function computePayroll(emp, att, rules, monthKeyOverride) {
     }
   }
 
-  const paySalary = daysInMonth ? (gross / daysInMonth) * effectiveTotalDays : 0;
+  const paySalary = daysInMonth ? (gross / daysInMonth) * effectivePayableDays : 0;
   const absentAmount = (basic / rules.absentDaysDivisor) * absent;
   const otRate = basic / rules.otDivisor;
   const otAmount = otRate * otHours;

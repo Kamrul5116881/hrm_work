@@ -73,7 +73,7 @@ export default async function handler(req,res){
          }
        }
      }
-     const paySalary=daysInMonth ? (gross/daysInMonth)*effTotal : 0,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
+     const paySalary=daysInMonth ? (gross/daysInMonth)*effPayable : 0,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
      const actualAmount=paySalary-absentAmount+otAmount,payBeforeTds=actualAmount-advance+arrear,payAmount=payBeforeTds-tds;
      prows.push({employeeId:att.employeeId,month:att.month,status:approvedMonths.has(att.month)?"Approved":"Draft",basic:r2(basic),houseRent:r2(houseRent),medical:r2(medical),conveyance:r2(conveyance),food:r2(food),gross:r2(gross),totalDays,payableDays,present,weekend,leave,absent,paySalary:r2(paySalary),absentAmount:r2(absentAmount),otRate:r2(otRate),otHours,otAmount:r2(otAmount),actualAmount:r2(actualAmount),advance,arrear,payBeforeTds:r2(payBeforeTds),tds,payAmount:r2(payAmount)});
     }
