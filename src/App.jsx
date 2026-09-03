@@ -2625,14 +2625,13 @@ function computePayroll(emp, att, rules, monthKeyOverride) {
   const totalDays = present + weekend + leave + absent;
   const payableDays = present + weekend + leave;
 
-  // Pay Salary = Gross / DaysInMonth * Payable Days (present+weekend+leave) — absent days are unpaid at gross rate
-  // Spec reference: =S2/daysInMonth * Payable (L2 was Total in older sheet, but per audit for 20260478 net 86632 requires Payable)
-  // DaysInMonth is dynamic per payroll month (att.month), fallback to rules.payDaysDivisor.
+  // Pay Salary = Gross / DaysInMonth * Total Days (spec: =S2/daysInMonth*L2, L2=Total)
+  // DaysInMonth dynamic per payroll month (att.month), fallback to rules.payDaysDivisor.
   const monthKey = monthKeyOverride || att.month || "";
   const daysInMonth = getDaysInMonth(monthKey) || Number(rules.payDaysDivisor) || 31;
-  // Joining-date handling: if joined after month, no pay; if mid-month, cap payable to daysFromJoin
-  let effectivePayableDays = payableDays;
+  // Joining-date handling: if joined after month, no pay; if mid-month, cap Total/Payable to daysFromJoin
   let effectiveTotalDays = totalDays;
+  let effectivePayableDays = payableDays;
   if (emp.joiningDate) {
     const join = parseHRDate(emp.joiningDate);
     if (join) {
@@ -2655,7 +2654,7 @@ function computePayroll(emp, att, rules, monthKeyOverride) {
     }
   }
 
-  const paySalary = daysInMonth ? (gross / daysInMonth) * effectivePayableDays : 0;
+  const paySalary = daysInMonth ? (gross / daysInMonth) * effectiveTotalDays : 0;
   const absentAmount = (basic / rules.absentDaysDivisor) * absent;
   const otRate = basic / rules.otDivisor;
   const otAmount = otRate * otHours;
