@@ -2590,7 +2590,7 @@ const DEFAULT_RULES = {
   payDaysDivisor: 31,     // Pay Salary = Gross / payDaysDivisor * Total Days
   absentDaysDivisor: 30,  // Absent Amount = Basic / absentDaysDivisor * Absent Days
   otDivisor: 104,         // OT Rate = Basic / otDivisor
-  basicDivisor: 1.5,      // Basic = (Gross - fixed allowances) / basicDivisor
+  basicDivisor: 1.5,      // Reserved (legacy formula: Basic = (Gross - fixed) / 1.5) — payroll now uses Basic/House Rent exactly as entered in Employee Data
 };
 
 function computePayroll(emp, att, rules) {
@@ -2603,17 +2603,20 @@ function computePayroll(emp, att, rules) {
   const arrear = num(att.arrear);
   const tds = num(att.tds);
 
+  // Salary components are taken exactly as entered in Employee Data.
+  // If a monthly attendance row overrides a component (e.g. gross, medical),
+  // that override is used; otherwise the employee master value is used.
+  // Basic and House Rent are NEVER recomputed from gross — they are the
+  // verbatim amounts from the employee record.
+  const basic = num(att.basic ?? emp.basic);
+  const houseRent = num(att.houseRent ?? emp.houseRent);
   const medical = num(att.medical ?? emp.medical);
   const conveyance = num(att.conveyance ?? emp.conveyance);
   const food = num(att.food ?? emp.food);
   const gross = num(att.gross ?? emp.gross);
-  const fixedAllowances = medical + conveyance + food;
 
   const totalDays = present + weekend + leave + absent;
   const payableDays = present + weekend + leave;
-
-  const basic = (gross - fixedAllowances) / rules.basicDivisor;
-  const houseRent = basic * 0.5;
 
   const paySalary = (gross / rules.payDaysDivisor) * totalDays;
   const absentAmount = (basic / rules.absentDaysDivisor) * absent;
@@ -2846,6 +2849,7 @@ async function parseAttendanceExcel(file, employees) {
       otHours: num(cell(row, "otHours")),
       advance: num(cell(row, "advance")), arrear: num(cell(row, "arrear")), tds: 0,
       basic: cell(row, "basic") !== "" ? num(cell(row, "basic")) : undefined,
+      houseRent: cell(row, "houseRent") !== "" ? num(cell(row, "houseRent")) : undefined,
       medical: cell(row, "medical") !== "" ? num(cell(row, "medical")) : undefined,
       conveyance: cell(row, "conveyance") !== "" ? num(cell(row, "conveyance")) : undefined,
       food: cell(row, "food") !== "" ? num(cell(row, "food")) : undefined,

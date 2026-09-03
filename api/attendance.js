@@ -1,6 +1,6 @@
 import { prisma } from "./_lib/prisma.js";
 import { methodGuard, body, errorMessage } from "./_lib/http.js";
-const fields=["employeeId","month","present","weekend","leave","absent","otHours","advance","arrear","tds","basic","medical","conveyance","food","gross","totalDays","payableDays"];
+const fields=["employeeId","month","present","weekend","leave","absent","otHours","advance","arrear","tds","basic","houseRent","medical","conveyance","food","gross","totalDays","payableDays"];
 const nums=new Set(fields.slice(2));
 function data(x){const d={};for(const k of fields)if(x[k]!==undefined)d[k]=nums.has(k)?Number(x[k])||0:x[k];return d;}
 export default async function handler(req,res){

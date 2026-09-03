@@ -2,12 +2,12 @@ import { prisma } from "./_lib/prisma.js";
 import { methodGuard, body, errorMessage } from "./_lib/http.js";
 import { requireAuth, canWrite } from "./_lib/auth.js";
 const ef=["employeeId","name","joiningDate","jobTitle","section","basic","houseRent","conveyance","food","medical","gross","casualLeaveAlloc","medicalLeaveAlloc","motherName","fatherName","dob","nid","maritalStatus","status"];
-const af=["employeeId","month","present","weekend","leave","absent","otHours","advance","arrear","tds","basic","medical","conveyance","food","gross","totalDays","payableDays"];
+const af=["employeeId","month","present","weekend","leave","absent","otHours","advance","arrear","tds","basic","houseRent","medical","conveyance","food","gross","totalDays","payableDays"];
 const nums=new Set(["basic","houseRent","conveyance","food","medical","gross","casualLeaveAlloc","medicalLeaveAlloc","present","weekend","leave","absent","otHours","advance","arrear","tds","totalDays","payableDays"]);
 // Per-month salary overrides are nullable in the schema: absent/blank means
 // "fall back to the employee master value". They must NEVER be coerced to 0,
 // or every reload replaces real salaries with zeros.
-const nullableSalary=new Set(["basic","medical","conveyance","food","gross"]);
+const nullableSalary=new Set(["basic","houseRent","medical","conveyance","food","gross"]);
 function pick(x,fs,nullableOk){const d={};for(const k of fs){if(x[k]===undefined)continue;if(nullableOk&&nullableSalary.has(k)){d[k]=x[k]===null||x[k]===""?null:Number(x[k])||0;}else d[k]=nums.has(k)?Number(x[k])||0:x[k];}return d;}
 export default async function handler(req,res){
  if(!methodGuard(req,res,["GET","POST"]))return;
@@ -50,10 +50,8 @@ export default async function handler(req,res){
     const prows=[];
     for(const att of atts){
      const emp=empById.get(att.employeeId);if(!emp||!att.month)continue;
-     const present=nn(att.present),weekend=nn(att.weekend),leave=nn(att.leave),absent=nn(att.absent),otHours=nn(att.otHours),advance=nn(att.advance),arrear=nn(att.arrear),tds=nn(att.tds);
-     const medical=nn(att.medical??emp.medical),conveyance=nn(att.conveyance??emp.conveyance),food=nn(att.food??emp.food),gross=nn(att.gross??emp.gross);
-     const totalDays=present+weekend+leave+absent,payableDays=present+weekend+leave;
-     const basic=(gross-(medical+conveyance+food))/R.basicDivisor,houseRent=basic*0.5;
+     const basic=nn(att.basic??emp.basic),houseRent=nn(att.houseRent??emp.houseRent),medical=nn(att.medical??emp.medical),conveyance=nn(att.conveyance??emp.conveyance),food=nn(att.food??emp.food),gross=nn(att.gross??emp.gross);
+      const totalDays=present+weekend+leave+absent,payableDays=present+weekend+leave;
      const paySalary=(gross/R.payDaysDivisor)*totalDays,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
      const actualAmount=paySalary-absentAmount+otAmount,payBeforeTds=actualAmount-advance+arrear,payAmount=payBeforeTds-tds;
      prows.push({employeeId:att.employeeId,month:att.month,status:approvedMonths.has(att.month)?"Approved":"Draft",basic:r2(basic),houseRent:r2(houseRent),medical:r2(medical),conveyance:r2(conveyance),food:r2(food),gross:r2(gross),totalDays,payableDays,present,weekend,leave,absent,paySalary:r2(paySalary),absentAmount:r2(absentAmount),otRate:r2(otRate),otHours,otAmount:r2(otAmount),actualAmount:r2(actualAmount),advance,arrear,payBeforeTds:r2(payBeforeTds),tds,payAmount:r2(payAmount)});
