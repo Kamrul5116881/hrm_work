@@ -50,9 +50,10 @@ export default async function handler(req,res){
     const prows=[];
     for(const att of atts){
      const emp=empById.get(att.employeeId);if(!emp||!att.month)continue;
+     const present=nn(att.present),weekend=nn(att.weekend),leave=nn(att.leave),absent=nn(att.absent),otHours=nn(att.otHours),advance=nn(att.advance),arrear=nn(att.arrear),tds=nn(att.tds);
      const basic=nn(att.basic??emp.basic),houseRent=nn(att.houseRent??emp.houseRent),medical=nn(att.medical??emp.medical),conveyance=nn(att.conveyance??emp.conveyance),food=nn(att.food??emp.food),gross=nn(att.gross??emp.gross);
-      const totalDays=present+weekend+leave+absent,payableDays=present+weekend+leave;
-     const paySalary=(gross/R.payDaysDivisor)*totalDays,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
+     const totalDays=present+weekend+leave+absent,payableDays=present+weekend+leave;
+     const paySalary=(gross/R.payDaysDivisor)*payableDays,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
      const actualAmount=paySalary-absentAmount+otAmount,payBeforeTds=actualAmount-advance+arrear,payAmount=payBeforeTds-tds;
      prows.push({employeeId:att.employeeId,month:att.month,status:approvedMonths.has(att.month)?"Approved":"Draft",basic:r2(basic),houseRent:r2(houseRent),medical:r2(medical),conveyance:r2(conveyance),food:r2(food),gross:r2(gross),totalDays,payableDays,present,weekend,leave,absent,paySalary:r2(paySalary),absentAmount:r2(absentAmount),otRate:r2(otRate),otHours,otAmount:r2(otAmount),actualAmount:r2(actualAmount),advance,arrear,payBeforeTds:r2(payBeforeTds),tds,payAmount:r2(payAmount)});
     }

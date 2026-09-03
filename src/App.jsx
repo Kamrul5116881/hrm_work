@@ -2587,7 +2587,7 @@ const HR_MONTH_NAMES = ["January","February","March","April","May","June","July"
    retune them later without touching this function's shape.
 ========================================================================= */
 const DEFAULT_RULES = {
-  payDaysDivisor: 31,     // Pay Salary = Gross / payDaysDivisor * Total Days
+  payDaysDivisor: 31,     // Pay Salary = Gross / payDaysDivisor * Payable Days (present+weekend+leave)
   absentDaysDivisor: 30,  // Absent Amount = Basic / absentDaysDivisor * Absent Days
   otDivisor: 104,         // OT Rate = Basic / otDivisor
   basicDivisor: 1.5,      // Reserved (legacy formula: Basic = (Gross - fixed) / 1.5) — payroll now uses Basic/House Rent exactly as entered in Employee Data
@@ -2618,7 +2618,9 @@ function computePayroll(emp, att, rules) {
   const totalDays = present + weekend + leave + absent;
   const payableDays = present + weekend + leave;
 
-  const paySalary = (gross / rules.payDaysDivisor) * totalDays;
+  // Pay Salary is pro-rated on PAYABLE days (present + weekend + leave) — absent days are not paid at gross rate.
+  // Net is then paySalary - absent deduction (basic/30*absent) + OT, so absent is penalised once at basic rate.
+  const paySalary = (gross / rules.payDaysDivisor) * payableDays;
   const absentAmount = (basic / rules.absentDaysDivisor) * absent;
   const otRate = basic / rules.otDivisor;
   const otAmount = otRate * otHours;
