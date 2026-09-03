@@ -9,6 +9,8 @@ const nums=new Set(["basic","houseRent","conveyance","food","medical","gross","c
 // or every reload replaces real salaries with zeros.
 const nullableSalary=new Set(["basic","houseRent","medical","conveyance","food","gross"]);
 function pick(x,fs,nullableOk){const d={};for(const k of fs){if(x[k]===undefined)continue;if(nullableOk&&nullableSalary.has(k)){d[k]=x[k]===null||x[k]===""?null:Number(x[k])||0;}else d[k]=nums.has(k)?Number(x[k])||0:x[k];}return d;}
+function getDaysInMonth(monthKey){ if(!monthKey||!/^\d{4}-\d{2}$/.test(monthKey))return null; const [y,m]=monthKey.split("-").map(Number); if(!y||m<1||m>12)return null; return new Date(y,m,0).getDate(); }
+function parseHRDateServer(v){ if(!v)return null; if(v instanceof Date&&!isNaN(v))return new Date(v.getFullYear(),v.getMonth(),v.getDate()); if(typeof v==="number"&&Number.isFinite(v)){ const ep=new Date(1899,11,30); const d=new Date(ep.getTime()+v*86400000); return new Date(d.getFullYear(),d.getMonth(),d.getDate()); } const s=String(v).trim(); if(!s)return null; let m=s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/); if(m){ const d=new Date(Number(m[1]),Number(m[2])-1,Number(m[3])); return isNaN(d)?null:d; } m=s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/); if(m){ const d=new Date(Number(m[3]),Number(m[2])-1,Number(m[1])); return isNaN(d)?null:d; } const p=new Date(s); if(isNaN(p))return null; return new Date(p.getFullYear(),p.getMonth(),p.getDate()); }
 export default async function handler(req,res){
  if(!methodGuard(req,res,["GET","POST"]))return;
  // Session-token auth (Bearer). 401 for missing/invalid/expired tokens.
@@ -53,7 +55,25 @@ export default async function handler(req,res){
      const present=nn(att.present),weekend=nn(att.weekend),leave=nn(att.leave),absent=nn(att.absent),otHours=nn(att.otHours),advance=nn(att.advance),arrear=nn(att.arrear),tds=nn(att.tds);
      const basic=nn(att.basic??emp.basic),houseRent=nn(att.houseRent??emp.houseRent),medical=nn(att.medical??emp.medical),conveyance=nn(att.conveyance??emp.conveyance),food=nn(att.food??emp.food),gross=nn(att.gross??emp.gross);
      const totalDays=present+weekend+leave+absent,payableDays=present+weekend+leave;
-     const paySalary=(gross/R.payDaysDivisor)*payableDays,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
+     const daysInMonth=getDaysInMonth(att.month)||Number(R.payDaysDivisor)||31;
+     let effTotal=totalDays, effPayable=payableDays;
+     if(emp.joiningDate){
+       const join=parseHRDateServer(emp.joiningDate);
+       if(join){
+         const [y,m]=att.month.split("-").map(Number);
+         if(y&&m){
+           const ms=new Date(y,m-1,1), me=new Date(y,m,0);
+           join.setHours(0,0,0,0); ms.setHours(0,0,0,0); me.setHours(0,0,0,0);
+           if(join>me){ effTotal=0; effPayable=0; }
+           else if(join>ms){
+             const df=Math.floor((me - join)/86400000)+1;
+             if(effTotal>df) effTotal=df;
+             if(effPayable>df) effPayable=df;
+           }
+         }
+       }
+     }
+     const paySalary=daysInMonth ? (gross/daysInMonth)*effTotal : 0,absentAmount=(basic/R.absentDaysDivisor)*absent,otRate=basic/R.otDivisor,otAmount=otRate*otHours;
      const actualAmount=paySalary-absentAmount+otAmount,payBeforeTds=actualAmount-advance+arrear,payAmount=payBeforeTds-tds;
      prows.push({employeeId:att.employeeId,month:att.month,status:approvedMonths.has(att.month)?"Approved":"Draft",basic:r2(basic),houseRent:r2(houseRent),medical:r2(medical),conveyance:r2(conveyance),food:r2(food),gross:r2(gross),totalDays,payableDays,present,weekend,leave,absent,paySalary:r2(paySalary),absentAmount:r2(absentAmount),otRate:r2(otRate),otHours,otAmount:r2(otAmount),actualAmount:r2(actualAmount),advance,arrear,payBeforeTds:r2(payBeforeTds),tds,payAmount:r2(payAmount)});
     }

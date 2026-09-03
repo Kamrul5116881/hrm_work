@@ -2587,13 +2587,20 @@ const HR_MONTH_NAMES = ["January","February","March","April","May","June","July"
    retune them later without touching this function's shape.
 ========================================================================= */
 const DEFAULT_RULES = {
-  payDaysDivisor: 31,     // Pay Salary = Gross / payDaysDivisor * Payable Days (present+weekend+leave)
+  payDaysDivisor: 31,     // Fallback — Pay Salary now uses dynamic DaysInMonth, not fixed 31 (see computePayroll)
   absentDaysDivisor: 30,  // Absent Amount = Basic / absentDaysDivisor * Absent Days
   otDivisor: 104,         // OT Rate = Basic / otDivisor
   basicDivisor: 1.5,      // Reserved (legacy formula: Basic = (Gross - fixed) / 1.5) — payroll now uses Basic/House Rent exactly as entered in Employee Data
 };
 
-function computePayroll(emp, att, rules) {
+function getDaysInMonth(monthKey) {
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) return null;
+  const [y, m] = monthKey.split("-").map(Number);
+  if (!y || m < 1 || m > 12) return null;
+  return new Date(y, m, 0).getDate();
+}
+
+function computePayroll(emp, att, rules, monthKeyOverride) {
   const present = num(att.present);
   const weekend = num(att.weekend);
   const leave = num(att.leave);
@@ -2618,9 +2625,37 @@ function computePayroll(emp, att, rules) {
   const totalDays = present + weekend + leave + absent;
   const payableDays = present + weekend + leave;
 
-  // Pay Salary is pro-rated on PAYABLE days (present + weekend + leave) — absent days are not paid at gross rate.
-  // Net is then paySalary - absent deduction (basic/30*absent) + OT, so absent is penalised once at basic rate.
-  const paySalary = (gross / rules.payDaysDivisor) * payableDays;
+  // Pay Salary = Gross / DaysInMonth * Total Days (spec: =S2/31*L2 with dynamic month length)
+  // DaysInMonth is derived from payroll month (att.month or explicit monthKeyOverride), fallback to rules.payDaysDivisor.
+  const monthKey = monthKeyOverride || att.month || "";
+  const daysInMonth = getDaysInMonth(monthKey) || Number(rules.payDaysDivisor) || 31;
+  // Joining-date handling: if employee joined after this payroll month, no pay; if joined mid-month, Total Days from attendance is already prorated (attendance import counts only days after joining), so paySalary via Total Days naturally prorates. We guard against paying for days before joining.
+  let effectiveTotalDays = totalDays;
+  let effectivePayableDays = payableDays;
+  if (emp.joiningDate) {
+    const join = parseHRDate(emp.joiningDate);
+    if (join) {
+      const [y, m] = (monthKey || "").split("-").map(Number);
+      if (y && m) {
+        const monthStart = new Date(y, m - 1, 1);
+        const monthEnd = new Date(y, m, 0);
+        join.setHours(0, 0, 0, 0);
+        monthStart.setHours(0, 0, 0, 0);
+        monthEnd.setHours(0, 0, 0, 0);
+        if (join > monthEnd) {
+          effectiveTotalDays = 0;
+          effectivePayableDays = 0;
+        } else if (join > monthStart) {
+          // Cap to days from joining to month end (inclusive) to prevent counting pre-join days as absent
+          const daysFromJoin = Math.floor((monthEnd - join) / 86400000) + 1;
+          if (effectiveTotalDays > daysFromJoin) effectiveTotalDays = daysFromJoin;
+          if (effectivePayableDays > daysFromJoin) effectivePayableDays = daysFromJoin;
+        }
+      }
+    }
+  }
+
+  const paySalary = daysInMonth ? (gross / daysInMonth) * effectiveTotalDays : 0;
   const absentAmount = (basic / rules.absentDaysDivisor) * absent;
   const otRate = basic / rules.otDivisor;
   const otAmount = otRate * otHours;
@@ -3838,7 +3873,7 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
       .map((r) => {
         const emp = byId.get(r.employeeId);
         if (!emp) return null;
-        return { emp, att: r, calc: computePayroll(emp, r, rules) };
+        return { emp, att: r, calc: computePayroll(emp, r, rules, r.month) };
       })
       .filter(Boolean);
   }, [attendanceRecords, monthPicker, byId, rules]);
@@ -3944,12 +3979,35 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
 
   function exportExcel() {
     const data = rows.map((r, i) => ({
-      SL: i + 1, "Employee Status": r.emp.status, "Employee ID": r.emp.employeeId, Name: r.emp.name,
-      Section: r.emp.section, "Job Title": r.emp.jobTitle, "Joining Date": r.emp.joiningDate,
-      "Present Days": r.calc.present, "Weekend/Holidays": r.calc.weekend, Leave: r.calc.leave, "Absent Days": r.calc.absent,
-      "Total Days": r.calc.totalDays, "Payable Days": r.calc.payableDays, Basic: r.calc.basic, "House Rent": r.calc.houseRent,
-      Medical: r.calc.medical, Conveyance: r.calc.conveyance, "Food Allowance": r.calc.food, "Gross Salary": r.calc.gross,
-      Overtime: r.calc.otAmount, "Advance": r.calc.advance, "Arrear": r.calc.arrear, "TDS Deduction": r.calc.tds, "Pay Amount Before TDS": r.calc.payBeforeTds, "Net Payable Salary": r.calc.payAmount,
+      "S/N": i + 1,
+      "Employee Status": r.emp.status,
+      "Employee ID": r.emp.employeeId,
+      "Employee Name": r.emp.name,
+      Section: r.emp.section,
+      "Job Title": r.emp.jobTitle,
+      "Joining Date": r.emp.joiningDate,
+      "Present Days": r.calc.present,
+      "Weekend/Holidays": r.calc.weekend,
+      Leave: r.calc.leave,
+      "Absent Days": r.calc.absent,
+      "Total Days": r.calc.totalDays,
+      "Payable Days": r.calc.payableDays,
+      Basic: r.calc.basic,
+      "House Rent": r.calc.houseRent,
+      Medical: r.calc.medical,
+      Conveyance: r.calc.conveyance,
+      "Food Allowance": r.calc.food,
+      "Gross Salary": r.calc.gross,
+      "Pay Salary": r.calc.paySalary,
+      "Absent Amount": r.calc.absentAmount,
+      "OT Hours": r.calc.otHours,
+      "OT Rate": r.calc.otRate,
+      "OT Amount": r.calc.otAmount,
+      "Actual Amount": r.calc.actualAmount,
+      "Advance Amount": r.calc.advance,
+      Arrear: r.calc.arrear,
+      Tax: r.calc.tds,
+      "Pay Amount": r.calc.payAmount,
     }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -3988,37 +4046,58 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
 
       <DocketCard style={{ overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1650 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 3200 }}>
             <thead>
               <tr style={{ borderBottom: `2px solid ${HR_T.indigo}` }}>
-                {["Emp ID","Name","Section","Payable Days","Basic","House Rent","Gross","Absent Amt","OT Amt","Advance","Arrear","TDS Deduction","Pay Amount","Net Pay","Payslip"].map((h) => (
-                  <th key={h} style={{ textAlign: ["Name","Emp ID","Section"].includes(h) ? "left" : "right", padding: "9px 11px", fontFamily: "'IBM Plex Sans'", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", color: HR_T.inkSoft, whiteSpace: "nowrap" }}>{h}</th>
+                {[
+                  "S/N","Employee Status","Employee ID","Employee Name","Section","Job Title","Joining Date",
+                  "Present","Weekend/Holidays","Leave","Absent","Total Days","Payable Days",
+                  "Basic","House Rent","Medical","Conveyance","Food Allowance","Gross",
+                  "Pay Salary","Absent Amount","OT Hours","OT Rate","OT Amount","Actual Amount",
+                  "Advance","Arrear","Tax","Pay Amount","Payslip"
+                ].map((h) => (
+                  <th key={h} style={{ textAlign: ["Employee Name","Employee ID","Section","Job Title","Employee Status"].includes(h) ? "left" : h==="S/N" ? "center" : "right", padding: "9px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: HR_T.inkSoft, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
                 <tr key={r.emp.employeeId} style={{ borderBottom: `1px solid ${HR_T.line}`, background: i % 2 ? HR_T.canvas : HR_T.panel }}>
-                  <td style={{ padding: "8px 11px", fontFamily: "'IBM Plex Mono'", fontSize: 12, borderLeft: `2px solid ${HR_T.indigo}` }}>{r.emp.employeeId}</td>
-                  <td style={{ padding: "8px 11px", fontFamily: "'IBM Plex Sans'", fontSize: 12.5 }}>{r.emp.name}</td>
-                  <td style={{ padding: "8px 11px", fontFamily: "'IBM Plex Sans'", fontSize: 12, color: HR_T.inkSoft }}>{r.emp.section || "—"}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5 }}>{r.calc.payableDays}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5 }}>{hrMoney(r.calc.basic)}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5 }}>{hrMoney(r.calc.houseRent)}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5 }}>{hrMoney(r.calc.gross)}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5, color: HR_T.bad }}>{hrMoney(r.calc.absentAmount)}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5, color: HR_T.amber }}>{hrMoney(r.calc.otAmount)}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                    <input type="number" min="0" step="0.01" value={r.att.advance ?? 0} disabled={isApproved} onChange={(e) => updateManualAmount(r.emp.employeeId, "advance", e.target.value)} style={{ width: 92, padding: "7px 8px", border: `1px solid ${isApproved ? HR_T.line : HR_T.indigo}`, borderRadius: 5, background: isApproved ? HR_T.canvas : "#fff", color: HR_T.ink, textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }} />
+                  <td style={{ padding: "8px 10px", textAlign: "center", fontFamily: "'IBM Plex Mono'", fontSize: 12, borderLeft: `2px solid ${HR_T.indigo}` }}>{i + 1}</td>
+                  <td style={{ padding: "8px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 11 }}><Badge tone={statusTone(r.emp.status)}>{r.emp.status}</Badge></td>
+                  <td style={{ padding: "8px 10px", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{r.emp.employeeId}</td>
+                  <td style={{ padding: "8px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 12.5 }}>{r.emp.name}</td>
+                  <td style={{ padding: "8px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 11, color: HR_T.inkSoft }}>{r.emp.section || "—"}</td>
+                  <td style={{ padding: "8px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 11, color: HR_T.inkSoft }}>{r.emp.jobTitle || "—"}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Sans'", fontSize: 11 }}>{hrFmtDate(r.emp.joiningDate)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{r.calc.present}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{r.calc.weekend}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{r.calc.leave}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, color: r.calc.absent>0?HR_T.bad:HR_T.ink }}>{r.calc.absent}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, fontWeight: 600 }}>{r.calc.totalDays}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, fontWeight: 600 }}>{r.calc.payableDays}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{hrMoney(r.calc.basic)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{hrMoney(r.calc.houseRent)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{hrMoney(r.calc.medical)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{hrMoney(r.calc.conveyance)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{hrMoney(r.calc.food)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, fontWeight: 600 }}>{hrMoney(r.calc.gross)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, color: HR_T.indigo }}>{hrMoney(r.calc.paySalary)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, color: HR_T.bad }}>{hrMoney(r.calc.absentAmount)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{r.calc.otHours}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>{hrMoney(r.calc.otRate)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, color: HR_T.amber }}>{hrMoney(r.calc.otAmount)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12, fontWeight: 600 }}>{hrMoney(r.calc.actualAmount)}</td>
+                  <td style={{ padding: "6px 7px", textAlign: "right" }}>
+                    <input type="number" min="0" step="0.01" value={r.att.advance ?? 0} disabled={isApproved} onChange={(e) => updateManualAmount(r.emp.employeeId, "advance", e.target.value)} style={{ width: 80, padding: "7px 8px", border: `1px solid ${isApproved ? HR_T.line : HR_T.indigo}`, borderRadius: 5, background: isApproved ? HR_T.canvas : "#fff", color: HR_T.ink, textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 11 }} />
                   </td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                    <input type="number" step="0.01" value={r.att.arrear ?? 0} disabled={isApproved} onChange={(e) => updateManualAmount(r.emp.employeeId, "arrear", e.target.value)} style={{ width: 92, padding: "7px 8px", border: `1px solid ${isApproved ? HR_T.line : HR_T.indigo}`, borderRadius: 5, background: isApproved ? HR_T.canvas : "#fff", color: HR_T.ink, textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }} />
+                  <td style={{ padding: "6px 7px", textAlign: "right" }}>
+                    <input type="number" step="0.01" value={r.att.arrear ?? 0} disabled={isApproved} onChange={(e) => updateManualAmount(r.emp.employeeId, "arrear", e.target.value)} style={{ width: 80, padding: "7px 8px", border: `1px solid ${isApproved ? HR_T.line : HR_T.indigo}`, borderRadius: 5, background: isApproved ? HR_T.canvas : "#fff", color: HR_T.ink, textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 11 }} />
                   </td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                    <input type="number" min="0" step="0.01" value={r.att.tds ?? 0} disabled={isApproved} onChange={(e) => updateManualAmount(r.emp.employeeId, "tds", e.target.value)} style={{ width: 92, padding: "7px 8px", border: `1px solid ${isApproved ? HR_T.line : HR_T.indigo}`, borderRadius: 5, background: isApproved ? HR_T.canvas : "#fff", color: HR_T.ink, textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12 }} />
+                  <td style={{ padding: "6px 7px", textAlign: "right" }}>
+                    <input type="number" min="0" step="0.01" value={r.att.tds ?? 0} disabled={isApproved} onChange={(e) => updateManualAmount(r.emp.employeeId, "tds", e.target.value)} style={{ width: 80, padding: "7px 8px", border: `1px solid ${isApproved ? HR_T.line : HR_T.indigo}`, borderRadius: 5, background: isApproved ? HR_T.canvas : "#fff", color: HR_T.ink, textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 11 }} />
                   </td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 12.5 }}>{hrMoney(r.calc.payBeforeTds)}</td>
-                  <td style={{ padding: "8px 11px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 13, fontWeight: 700, color: HR_T.indigo }}>{hrMoney(r.calc.payAmount)}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono'", fontSize: 13, fontWeight: 700, color: HR_T.indigo }}>{hrMoney(r.calc.payAmount)}</td>
                   <td style={{ padding: "6px 8px", textAlign: "center" }}>
                     <Btn size="sm" onClick={() => openPayslip(r)} disabled={!isApproved}>
                       <Printer size={13} /> Payslip
@@ -4026,7 +4105,7 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
                   </td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={15} style={{ padding: 36, textAlign: "center", fontFamily: "'IBM Plex Sans'", color: HR_T.muted, fontSize: 13 }}>No attendance imported for this month yet — payroll needs attendance first.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={30} style={{ padding: 36, textAlign: "center", fontFamily: "'IBM Plex Sans'", color: HR_T.muted, fontSize: 13 }}>No attendance imported for this month yet — payroll needs attendance first.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -4041,7 +4120,7 @@ function PayrollHistory({ employees, attendanceRecords, payrollApprovals, rules 
 
   const byMonth = months.map((m) => {
     const recs = attendanceRecords.filter((r) => r.month === m);
-    const net = recs.reduce((s, r) => { const emp = byId.get(r.employeeId); return emp ? s + computePayroll(emp, r, rules).payAmount : s; }, 0);
+    const net = recs.reduce((s, r) => { const emp = byId.get(r.employeeId); return emp ? s + computePayroll(emp, r, rules, r.month).payAmount : s; }, 0);
     return { month: m, count: recs.length, net, approved: !!payrollApprovals[m]?.approved };
   });
 
@@ -4134,7 +4213,7 @@ function HRDashboard({ employees, attendanceRecords, rules }) {
   const totals = scopedRecs.reduce((a, r) => {
     const emp = byId.get(r.employeeId);
     if (!emp) return a;
-    const c = computePayroll(emp, r, rules);
+    const c = computePayroll(emp, r, rules, r.month);
     return { payroll: a.payroll + c.payAmount, ot: a.ot + c.otAmount, leave: a.leave + num(r.leave) };
   }, { payroll: 0, ot: 0, leave: 0 });
 
@@ -4251,7 +4330,7 @@ function HRReports({ employees, attendanceRecords, rules }) {
       const bySection = {};
       recs.forEach((r) => {
         const e = byId.get(r.employeeId); if (!e) return;
-        const c = computePayroll(e, r, rules);
+        const c = computePayroll(e, r, rules, r.month);
         const k = e.section || "Unassigned";
         bySection[k] = (bySection[k] || 0) + c.payAmount;
       });
@@ -4883,7 +4962,7 @@ function HRApp() {
   const attendanceByEmployee = (employeeId) => state.attendanceRecords.filter((r) => r.employeeId === employeeId).sort((a, b) => a.month.localeCompare(b.month));
   const payrollByEmployee = (employeeId) => attendanceByEmployee(employeeId).map((att) => {
     const emp = state.employees.find((e) => e.employeeId === employeeId);
-    const calc = computePayroll(emp, att, state.rules);
+    const calc = computePayroll(emp, att, state.rules, att.month);
     return { month: att.month, ...calc, approved: !!state.payrollApprovals[att.month]?.approved };
   });
   const leaveBalance = (emp) => {
