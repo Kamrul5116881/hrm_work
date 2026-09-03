@@ -33,6 +33,7 @@ import {
   History,
   Settings as SettingsIcon,
   ArrowLeft,
+  ChevronLeft,
   AlertTriangle,
   Scissors,
   Ruler,
@@ -3882,6 +3883,30 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
     gross: a.gross + r.calc.gross, pay: a.pay + r.calc.paySalary, ot: a.ot + r.calc.otAmount, net: a.net + r.calc.payAmount,
   }), { gross: 0, pay: 0, ot: 0, net: 0 });
 
+  // --- Slider usability: wide table (30 cols) needs easy horizontal navigation ---
+  const scrollRef = useRef(null);
+  const [scrollPct, setScrollPct] = useState(0);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      setScrollPct(max ? (el.scrollLeft / max) * 100 : 0);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(onScroll);
+    ro.observe(el);
+    onScroll();
+    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, [rows, monthPicker]);
+  const scrollBy = (dx) => { if (scrollRef.current) scrollRef.current.scrollBy({ left: dx, behavior: "smooth" }); };
+  const onSlider = (e) => {
+    const pct = Number(e.target.value);
+    setScrollPct(pct);
+    const el = scrollRef.current;
+    if (el) { const max = el.scrollWidth - el.clientWidth; el.scrollLeft = (pct / 100) * max; }
+  };
+
   function updateManualAmount(employeeId, field, value) {
     if (isApproved) return;
     const numericValue = value === "" ? 0 : num(value);
@@ -4043,8 +4068,29 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
         <HrStatCard icon={CheckCircle2} label="Total Net Payable" value={`৳ ${hrMoney(totals.net)}`} tone="good" />
       </div>
 
+      {/* Slider usability: easy scroll for wide 30-col payroll table */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "10px 12px", background: HR_T.canvasDeep, border: `1px solid ${HR_T.line}`, borderRadius: 8, flexWrap: "wrap" }}>
+        <Btn onClick={() => scrollBy(-360)} style={{ padding: "7px 12px", minHeight: 34, border: `1px solid ${HR_T.line}` }}><ChevronLeft size={14} /> Scroll left</Btn>
+        <div style={{ flex: "1 1 220px", display: "flex", alignItems: "center", gap: 10, minWidth: 160 }}>
+          <span style={{ fontFamily: "'IBM Plex Sans'", fontSize: 11, fontWeight: 700, color: HR_T.inkSoft, whiteSpace: "nowrap", letterSpacing: ".04em", textTransform: "uppercase" }}>Slide to view</span>
+          <input type="range" min="0" max="100" value={Math.round(scrollPct)} onChange={onSlider} onInput={onSlider} style={{ flex: 1, accentColor: HR_T.indigo, height: 6, cursor: "pointer" }} aria-label="Scroll payroll table" />
+          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: HR_T.inkSoft, minWidth: 38, textAlign: "right" }}>{Math.round(scrollPct)}%</span>
+        </div>
+        <Btn onClick={() => scrollBy(360)} style={{ padding: "7px 12px", minHeight: 34, border: `1px solid ${HR_T.line}` }}>Scroll right <ChevronRight size={14} /></Btn>
+        <span style={{ fontFamily: "'IBM Plex Sans'", fontSize: 11, color: HR_T.muted, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}><span style={{ width: 14, height: 14, border: `1px solid ${HR_T.line}`, borderRadius: 3, background: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><span style={{ width: 8, height: 3, background: HR_T.indigo, borderRadius: 2, display: "inline-block" }} /></span> drag table or use slider</span>
+      </div>
+
       <DocketCard style={{ overflow: "hidden" }}>
-        <div style={{ overflowX: "auto" }}>
+        <style>{`
+          .payroll-scroll::-webkit-scrollbar { height: 16px; }
+          .payroll-scroll::-webkit-scrollbar-track { background: ${HR_T.canvasDeep}; border-radius: 8px; }
+          .payroll-scroll::-webkit-scrollbar-thumb { background: ${HR_T.indigo}; border-radius: 8px; border: 2px solid ${HR_T.canvasDeep}; }
+          .payroll-scroll::-webkit-scrollbar-thumb:hover { background: ${HR_T.indigoDeep}; }
+          .payroll-scroll::-webkit-scrollbar-thumb:active { background: ${HR_T.indigoDeep}; }
+          .payroll-scroll { scrollbar-width: auto; scrollbar-color: ${HR_T.indigo} ${HR_T.canvasDeep}; scroll-behavior: smooth; }
+          .payroll-scroll table th { position: sticky; top: 0; background: ${HR_T.panel}; z-index: 2; }
+        `}</style>
+        <div ref={scrollRef} className="payroll-scroll" style={{ overflowX: "auto", overflowY: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 3200 }}>
             <thead>
               <tr style={{ borderBottom: `2px solid ${HR_T.indigo}` }}>
@@ -4055,7 +4101,7 @@ function PayrollManagement({ employees, attendanceRecords, payrollApprovals, onA
                   "Pay Salary","Absent Amount","OT Hours","OT Rate","OT Amount","Actual Amount",
                   "Advance","Arrear","Tax","Pay Amount","Payslip"
                 ].map((h) => (
-                  <th key={h} style={{ textAlign: ["Employee Name","Employee ID","Section","Job Title","Employee Status"].includes(h) ? "left" : h==="S/N" ? "center" : "right", padding: "9px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: HR_T.inkSoft, whiteSpace: "nowrap" }}>{h}</th>
+                  <th key={h} style={{ textAlign: ["Employee Name","Employee ID","Section","Job Title","Employee Status"].includes(h) ? "left" : h==="S/N" ? "center" : "right", padding: "9px 10px", fontFamily: "'IBM Plex Sans'", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: HR_T.inkSoft, whiteSpace: "nowrap", position: "sticky", top: 0, background: HR_T.panel, zIndex: 1 }}>{h}</th>
                 ))}
               </tr>
             </thead>
